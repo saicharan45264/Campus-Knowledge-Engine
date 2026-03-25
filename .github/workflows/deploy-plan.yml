@@ -36,4 +36,4 @@ jobs:
         npm run build
         
     - name: Verify Docker Compose Build
-      run: docker-compose build
+      run: docker compose build
