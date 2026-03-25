@@ -42,12 +42,21 @@ export default function StudentLostAndFound({ onBack, onLogout }) {
     { id: 4, title: 'Calculus Textbook', location: 'Bus Stop', date: 'Oct 21, 2026', time: '8:45 AM', image: '📘', reporter: 'Diana Evans', email: 'diana.e@university.edu', description: 'Volume 3 of the Calculus textbook. Found sitting on the bench at the main campus bus stop.' },
   ];
 
-  const searchedItems = [
-    { id: 1, title: 'Black Lenovo Thinkpad', location: 'Library 2nd Floor', date: 'Oct 24, 2026', time: '10:30 AM', image: '💻', similarity: 98, reporter: 'Alice Smith', email: 'alice.smith@university.edu', description: 'Found a black Lenovo Thinkpad with a few developer stickers. Left it with the library front desk.' },
-    { id: 2, title: 'Dark grey laptop case', location: 'Cafeteria', date: 'Oct 23, 2026', time: '1:15 PM', image: '💼', similarity: 82, reporter: 'Bob Jones', email: 'b.jones@university.edu', description: 'Empty dark grey laptop sleeve found on table 4 in the main cafeteria.' },
-  ];
+  const getSearchedItems = () => {
+    const q = searchQuery.toLowerCase();
+    if (q.includes('buds') || q.includes('samsung') || q.includes('poro') || q.includes('pro') || q.includes('galaxy')) {
+      return [
+        { id: 6, title: 'Samsung Galaxy Buds 3 Pro (White)', location: 'Campus Gym', date: 'Oct 24, 2026', time: '6:30 PM', image: '/images/buds-white.png', similarity: 99, reporter: 'Tom Hardy', email: 't.hardy@university.edu', description: 'White Galaxy Buds 3 Pro, found near the dumbbells rack on the second floor.' },
+        { id: 5, title: 'Samsung Galaxy Buds 3 Pro (Gold/Black)', location: 'Main Auditorium', date: 'Oct 25, 2026', time: '2:15 PM', image: '/images/buds-gold.png', similarity: 95, reporter: 'Sarah Connor', email: 's.connor@university.edu', description: 'Found a dark silver/gold pair of Samsung Galaxy Buds 3 Pro inside a protective case under row F.' },
+      ];
+    }
+    return [
+      { id: 1, title: 'Black Lenovo Thinkpad', location: 'Library 2nd Floor', date: 'Oct 24, 2026', time: '10:30 AM', image: '💻', similarity: 98, reporter: 'Alice Smith', email: 'alice.smith@university.edu', description: 'Found a black Lenovo Thinkpad with a few developer stickers. Left it with the library front desk.' },
+      { id: 2, title: 'Dark grey laptop case', location: 'Cafeteria', date: 'Oct 23, 2026', time: '1:15 PM', image: '💼', similarity: 82, reporter: 'Bob Jones', email: 'b.jones@university.edu', description: 'Empty dark grey laptop sleeve found on table 4 in the main cafeteria.' },
+    ];
+  };
 
-  const itemsToDisplay = isSearched ? searchedItems : defaultItems;
+  const itemsToDisplay = isSearched ? getSearchedItems() : defaultItems;
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -78,18 +87,24 @@ export default function StudentLostAndFound({ onBack, onLogout }) {
                <form onSubmit={handleSearch} className="relative z-10 bg-white p-3 rounded-2xl shadow-xl flex flex-col md:flex-row gap-3 items-center">
                   
                   {/* HUGE Search Input */}
-                  <div className="w-full relative flex items-center">
-                    <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-stone-400" size={20} />
-                    <input 
-                      type="text" 
+                  <div className="w-full relative flex items-start">
+                    <Search className="absolute left-4 top-5 text-stone-400" size={20} />
+                    <textarea 
                       value={searchQuery}
                       onChange={e => setSearchQuery(e.target.value)}
                       placeholder="Describe the item (e.g. 'blue water bottle')..." 
-                      className="w-full pl-12 pr-4 py-4 bg-transparent outline-none font-medium text-stone-700 placeholder:text-stone-400"
+                      className="w-full pl-12 pr-14 py-4 bg-transparent outline-none font-medium text-stone-700 placeholder:text-stone-400 resize-none"
+                      rows="3"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSearch(e);
+                        }
+                      }}
                     />
                     
                     {/* Multimodal Photo Button Inside Input Box */}
-                    <button type="button" onClick={() => setSearchImage(!searchImage)} className={`absolute right-3 p-2 rounded-xl transition-all ${searchImage ? 'bg-rose-100 text-rose-600' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`} title="Upload photo to search (Optional)">
+                    <button type="button" onClick={() => setSearchImage(!searchImage)} className={`absolute right-3 top-3 p-2 rounded-xl transition-all ${searchImage ? 'bg-rose-100 text-rose-600' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`} title="Upload photo to search (Optional)">
                        <ImageIcon size={20} />
                     </button>
                   </div>
@@ -112,11 +127,19 @@ export default function StudentLostAndFound({ onBack, onLogout }) {
             {/* ITEM DISPLAY GRID SECTION */}
             <div className="space-y-4">
               <div className="flex justify-between items-end border-b border-rose-200 pb-3">
-                 <h2 className="text-2xl font-bold text-stone-900">
+                 <div className="text-2xl font-bold text-stone-900">
                    {isSearched ? (
-                     <span className="flex items-center gap-2">Search Results <span className="bg-rose-100 text-rose-700 text-xs px-2 py-1 rounded-lg">Ranked List</span></span>
+                     <div className="flex flex-col gap-2">
+                       <span className="flex items-center gap-2">
+                         Search Results 
+                         <span className="bg-rose-100 text-rose-700 text-xs px-2 py-1 rounded-lg">Ranked List</span>
+                       </span>
+                       <span className="text-sm font-normal text-stone-500 max-w-2xl leading-relaxed italic">
+                         Showing matches for: "{searchQuery}"
+                       </span>
+                     </div>
                    ) : 'Most Recently Found Items'}
-                 </h2>
+                 </div>
               </div>
               
               <div className="grid md:grid-cols-3 lg:grid-cols-4 gap-6">
@@ -130,8 +153,12 @@ export default function StudentLostAndFound({ onBack, onLogout }) {
                       </div>
                     )}
                     
-                    <div className="h-48 bg-stone-100 flex items-center justify-center text-7xl group-hover:scale-110 transition-transform duration-300">
-                      {item.image}
+                    <div className="h-48 bg-stone-100 flex items-center justify-center text-7xl group-hover:scale-110 transition-transform duration-300 overflow-hidden">
+                      {item.image.includes('.') ? (
+                         <img src={item.image} alt={item.title} className="w-full h-full object-cover" />
+                      ) : (
+                         item.image
+                      )}
                     </div>
                     <div className="p-6 border-t border-rose-50">
                       <h3 className="font-bold text-lg text-stone-800 mb-3">{item.title}</h3>
@@ -202,8 +229,12 @@ export default function StudentLostAndFound({ onBack, onLogout }) {
              </button>
              
              {/* Modal Left / Top Image */}
-             <div className="md:w-2/5 bg-stone-100 flex items-center justify-center text-8xl py-12 md:py-0 border-b md:border-b-0 md:border-r border-rose-100">
-               {selectedItem.image}
+             <div className="md:w-2/5 bg-stone-100 flex items-center justify-center text-8xl py-12 md:py-0 border-b md:border-b-0 md:border-r border-rose-100 overflow-hidden">
+               {selectedItem.image.includes('.') ? (
+                 <img src={selectedItem.image} alt={selectedItem.title} className="w-full h-full object-cover" />
+               ) : (
+                 selectedItem.image
+               )}
              </div>
 
              {/* Modal Right Content */}
