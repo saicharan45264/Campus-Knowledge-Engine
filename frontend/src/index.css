@@ -1,13 +1,31 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-stone-50 text-stone-900 font-sans antialiased;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+@layer components {
+  /* Making UI more visually appealing with light reddish tones as requested */
+  
+  input, select, textarea {
+    @apply border-rose-200 focus:border-rose-400 focus:ring-rose-200 bg-white transition-colors duration-200 !important;
+  }
+  
+  /* Targeting the cards to have reddish borders */
+  .border, .border-l, .border-r, .border-t, .border-b, .border-slate-200 {
+    @apply border-rose-200 !important;
+  }
+
+  .hover\:border-indigo-200:hover {
+    @apply border-rose-400 shadow-rose-100 !important;
+  }
+
+  /* Enhancing overall look with softer reddish shadows */
+  .shadow-sm, .shadow, .shadow-md, .shadow-xl {
+    box-shadow: 0 4px 20px -2px rgba(225, 29, 72, 0.05) !important;
+  }
 }
