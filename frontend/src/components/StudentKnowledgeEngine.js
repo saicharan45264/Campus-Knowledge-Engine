@@ -13,13 +13,22 @@ export default function StudentKnowledgeEngine({ onBack, onLogout }) {
     
     setMessages([...messages, { role: 'user', text: input }]);
     const currentInput = input;
+    const queryTxt = input.toLowerCase();
     setInput('');
     
     // Mock response
     setTimeout(() => {
+      let responseText = `I'm still developing`;
+
+      if (queryTxt.includes('class advisor') || queryTxt.includes('contact them')) {
+        responseText = "Your class advisors for B.Tech CSE Section F, Semester 5 are: Dr. R. Karthi (r_karthi@cb.amrita.edu) and Ms. Krishna Priya G (g_krishnapriya@cb.amrita.edu).";
+      } else if (queryTxt.includes('lab session') || queryTxt.includes('which days')) {
+        responseText = "You have three lab sessions scheduled this week:\n\nMonday: Computer Networks Lab (23CSE302) from 2:55 PM – 3:45 PM\n\nWednesday: Machine Learning Lab (23CSE301) from 2:05 PM – 3:45 PM in CP Lab 2 (A404)\n\nThursday: Embedded Systems Lab (23CSE304) starting around 2:05 PM in the PG Lab, SF floor";
+      }
+
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        text: `I'm still developing`
+        text: responseText
       }]);
     }, 1000);
   };

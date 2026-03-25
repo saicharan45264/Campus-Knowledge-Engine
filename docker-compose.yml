@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/campus_db
+      - CHROMA_DB_URL=http://vector_db:8000
+    depends_on:
+      - db
+      - vector_db
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: campus_db
+    ports:
+      - "5432:5432"
+
+  vector_db:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
