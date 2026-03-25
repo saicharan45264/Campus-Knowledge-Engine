@@ -12,7 +12,6 @@ export default function StudentKnowledgeEngine({ onBack, onLogout }) {
     if (!input.trim()) return;
     
     setMessages([...messages, { role: 'user', text: input }]);
-    const currentInput = input;
     const queryTxt = input.toLowerCase();
     setInput('');
     
