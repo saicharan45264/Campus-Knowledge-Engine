@@ -1,0 +1,45 @@
+services:
+  # ──────────────────────────────────────────
+  # PostgreSQL — Metadata, Vector Search (pgvector), FTS
+  # ──────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cl-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: curriculumlens
+      POSTGRES_USER: cluser
+      POSTGRES_PASSWORD: clpassword
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cluser -d curriculumlens"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────
+  # Neo4j — Curriculum Knowledge Graph
+  # ──────────────────────────────────────────
+  neo4j:
+    image: neo4j:5.24-community
+    container_name: cl-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/clpassword
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474"  # Browser UI
+      - "7687:7687"  # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+  # (Note: Backend and Frontend are run natively via uvicorn and npm run dev)
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:

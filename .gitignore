@@ -1,0 +1,23 @@
+# Python / Backend
+venv/
+__pycache__/
+*.pyc
+.env
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+.next/
+dist/
+build/
+.npm/
+
+# Data / Uploads
+backend/data/uploads/
+backend/data/*.db
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
