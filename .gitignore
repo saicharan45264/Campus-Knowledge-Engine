@@ -1,0 +1,9 @@
+venv/
+.env
+__pycache__/
+*.pyc
+chroma_store/
+fts.sqlite
+uploads/
+.DS_Store
+TestDocs/
