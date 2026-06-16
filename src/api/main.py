@@ -26,8 +26,10 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(student.router)
 
+import os
 from fastapi.staticfiles import StaticFiles
-app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
+if os.path.isdir("frontend/dist"):
+    app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn

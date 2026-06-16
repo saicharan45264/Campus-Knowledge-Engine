@@ -2,216 +2,212 @@ import React, { useState, useEffect } from 'react';
 import Api from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
+const DOC_TYPES = [
+    { value: 'curriculum',        label: 'Curriculum' },
+    { value: 'timetable',         label: 'Timetable' },
+    { value: 'academic_calendar', label: 'Academic Calendar' },
+    { value: 'regulations',       label: 'Regulations' },
+    { value: 'policy',            label: 'Policy' },
+    { value: 'other',             label: 'Other' },
+];
+
+const statusClass = (s) => {
+    if (!s) return 'pending';
+    if (s === 'indexed') return 'indexed';
+    if (s.startsWith('error')) return 'error';
+    return 'pending';
+};
+
+const TABS = [
+    { id: 'upload',   icon: '⬆️',  label: 'Upload Document' },
+    { id: 'insights', icon: '📊',  label: 'Documents' },
+    { id: 'students', icon: '👥',  label: 'Students' },
+];
+
 const AdminPortal = () => {
-    const [activeTab, setActiveTab] = useState('upload'); // 'upload', 'insights', 'students'
+    const [activeTab, setActiveTab] = useState('upload');
     const [file, setFile] = useState(null);
-    const [formData, setFormData] = useState({
-        document_type: 'curriculum',
-        department: '', semester: '', section_id: '', academic_year: ''
-    });
+    const [formData, setFormData] = useState({ document_type: 'curriculum', department: '', semester: '', section_id: '', academic_year: '' });
     const [msg, setMsg] = useState({ text: '', type: '' });
+    const [uploading, setUploading] = useState(false);
     const { token } = useAuth();
-    
-    // Insights & Students state
+
     const [documents, setDocuments] = useState([]);
     const [loadingDocs, setLoadingDocs] = useState(false);
     const [students, setStudents] = useState([]);
     const [loadingStudents, setLoadingStudents] = useState(false);
 
-    const handleChange = (e) => setFormData({...formData, [e.target.name]: e.target.value});
+    const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!file) {
-            setMsg({ text: 'Please select a file', type: 'error' });
-            return;
-        }
-
+        if (!file) { setMsg({ text: 'Please select a file.', type: 'error' }); return; }
         const data = new FormData();
         data.append('file', file);
-        Object.keys(formData).forEach(key => {
-            if (formData[key]) data.append(key, formData[key]);
-        });
-        
-        // Add hardcoded regulation_year
+        Object.keys(formData).forEach(k => { if (formData[k]) data.append(k, formData[k]); });
         data.append('regulation_year', '2023-2027');
-
-        setMsg({ text: 'Uploading...', type: '' });
-
+        setUploading(true); setMsg({ text: '', type: '' });
         try {
-            const response = await Api.uploadDocument(data, token);
-            setMsg({ text: `Upload successful! Document ID: ${response.doc_id}`, type: 'success' });
-            e.target.reset();
-            setFile(null);
+            const res = await Api.uploadDocument(data, token);
+            setMsg({ text: `Upload successful! Doc ID: ${res.doc_id}`, type: 'success' });
+            e.target.reset(); setFile(null);
             setFormData({ document_type: 'curriculum', department: '', semester: '', section_id: '', academic_year: '' });
-            if (activeTab === 'insights') fetchDocuments();
-        } catch (error) {
-            setMsg({ text: error.message, type: 'error' });
-        }
+        } catch (err) {
+            setMsg({ text: err.message, type: 'error' });
+        } finally { setUploading(false); }
     };
 
     const fetchDocuments = async () => {
         setLoadingDocs(true);
-        try {
-            const res = await Api.getAdminDocuments(token);
-            setDocuments(res.documents || []);
-        } catch (error) {
-            console.error("Failed to fetch documents", error);
-            setMsg({ text: 'Failed to load documents', type: 'error' });
-        } finally {
-            setLoadingDocs(false);
-        }
+        try { const r = await Api.getAdminDocuments(token); setDocuments(r.documents || []); }
+        catch { setMsg({ text: 'Failed to load documents', type: 'error' }); }
+        finally { setLoadingDocs(false); }
     };
 
     const fetchStudents = async () => {
         setLoadingStudents(true);
-        try {
-            const res = await Api.getAdminStudents(token);
-            setStudents(res.students || []);
-        } catch (error) {
-            console.error("Failed to fetch students", error);
-            setMsg({ text: 'Failed to load students', type: 'error' });
-        } finally {
-            setLoadingStudents(false);
-        }
+        try { const r = await Api.getAdminStudents(token); setStudents(r.students || []); }
+        catch { setMsg({ text: 'Failed to load students', type: 'error' }); }
+        finally { setLoadingStudents(false); }
     };
 
     const handleDelete = async (docId) => {
-        if (!window.confirm("Are you sure you want to delete this document?")) return;
-        
+        if (!window.confirm('Delete this document?')) return;
         try {
             await Api.deleteAdminDocument(docId, token);
-            setMsg({ text: 'Document deleted successfully', type: 'success' });
-            fetchDocuments(); // Refresh the list
-        } catch (error) {
-            console.error("Failed to delete document", error);
-            setMsg({ text: error.message || 'Failed to delete document', type: 'error' });
-        }
+            setMsg({ text: 'Document deleted.', type: 'success' });
+            fetchDocuments();
+        } catch (err) { setMsg({ text: err.message, type: 'error' }); }
     };
 
     useEffect(() => {
-        setMsg({ text: '', type: '' }); // Clear messages when switching tabs
+        setMsg({ text: '', type: '' });
         if (activeTab === 'insights') fetchDocuments();
         if (activeTab === 'students') fetchStudents();
     }, [activeTab]);
 
     return (
-        <div className="section active">
-            <div className="portal-container" style={{ maxWidth: '1000px', margin: '0 auto' }}>
-                <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
-                    <button 
-                        className={activeTab === 'upload' ? 'btn-primary' : 'btn-secondary'} 
-                        onClick={() => setActiveTab('upload')}
+        <div className="admin-layout">
+            {/* Sidebar */}
+            <aside className="admin-sidebar">
+                <h3>Admin Panel</h3>
+                {TABS.map(t => (
+                    <button
+                        key={t.id}
+                        className={`admin-sidebar-btn ${activeTab === t.id ? 'active' : ''}`}
+                        onClick={() => setActiveTab(t.id)}
                     >
-                        Upload Documents
+                        <span>{t.icon}</span> {t.label}
                     </button>
-                    <button 
-                        className={activeTab === 'insights' ? 'btn-primary' : 'btn-secondary'} 
-                        onClick={() => setActiveTab('insights')}
-                    >
-                        Insights
-                    </button>
-                    <button 
-                        className={activeTab === 'students' ? 'btn-primary' : 'btn-secondary'} 
-                        onClick={() => setActiveTab('students')}
-                    >
-                        Students
-                    </button>
-                </div>
+                ))}
+            </aside>
 
-                {msg.text && <div className={`message ${msg.type}`} style={{ marginBottom: '1rem' }}>{msg.text}</div>}
+            {/* Content */}
+            <main className="admin-content">
+                {msg.text && (
+                    <div className={`msg ${msg.type}`} style={{ marginBottom: '1.25rem' }}>
+                        {msg.text}
+                    </div>
+                )}
 
+                {/* Upload */}
                 {activeTab === 'upload' && (
                     <>
-                        <h2>Upload Documents</h2>
-                        <form onSubmit={handleSubmit} className="upload-form card" style={{ maxWidth: '800px' }}>
-                            <div className="form-group">
-                                <label>Document File (PDF)</label>
-                                <input type="file" accept=".pdf" required onChange={(e) => setFile(e.target.files[0])} />
+                        <h2>Upload Document</h2>
+                        <form onSubmit={handleSubmit} className="upload-card">
+                            <div
+                                className={`file-drop-zone ${file ? 'has-file' : ''}`}
+                                onClick={() => document.getElementById('file-input').click()}
+                            >
+                                <div className="drop-icon">{file ? '✅' : '📄'}</div>
+                                {file
+                                    ? <div className="file-name">{file.name}</div>
+                                    : <p>Click to select a PDF file</p>
+                                }
+                                <input
+                                    id="file-input"
+                                    type="file"
+                                    accept=".pdf"
+                                    style={{ display: 'none' }}
+                                    onChange={(e) => setFile(e.target.files[0])}
+                                />
                             </div>
+
                             <div className="form-group">
                                 <label>Document Type</label>
                                 <select name="document_type" value={formData.document_type} onChange={handleChange} required>
-                                    <option value="curriculum">Curriculum</option>
-                                    <option value="policy">Policy</option>
-                                    <option value="timetable">Timetable</option>
-                                    <option value="academic_calendar">Academic Calendar</option>
-                                    <option value="regulations">Regulations</option>
-                                    <option value="other">Other</option>
+                                    {DOC_TYPES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
                                 </select>
                             </div>
-                            {/* Conditional Rendering based on Document Type */}
-                            {formData.document_type === 'curriculum' && (
-                                <>
-                                    <div className="form-group"><label>Department</label><input name="department" placeholder="e.g. CSE" onChange={handleChange} value={formData.department} required /></div>
-                                </>
+
+                            {['curriculum','timetable'].includes(formData.document_type) && (
+                                <div className="form-group">
+                                    <label>Department</label>
+                                    <input name="department" placeholder="e.g. CSE" onChange={handleChange} value={formData.department} required />
+                                </div>
                             )}
+
                             {formData.document_type === 'timetable' && (
-                                <>
-                                    <div className="form-group"><label>Department</label><input name="department" placeholder="e.g. CSE" onChange={handleChange} value={formData.department} required /></div>
-                                    <div className="form-group"><label>Section</label><input name="section_id" placeholder="e.g. A" onChange={handleChange} value={formData.section_id} required /></div>
-                                    <div className="form-group"><label>Semester (Optional)</label><input type="number" name="semester" placeholder="e.g. 5" onChange={handleChange} value={formData.semester} /></div>
-                                </>
+                                <div className="form-grid-2">
+                                    <div className="form-group">
+                                        <label>Section</label>
+                                        <input name="section_id" placeholder="e.g. CSE-A" onChange={handleChange} value={formData.section_id} required />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Semester (optional)</label>
+                                        <input type="number" name="semester" placeholder="e.g. 5" onChange={handleChange} value={formData.semester} />
+                                    </div>
+                                </div>
                             )}
-                            {/* For policy or other, we might want to show optional fields or hide them. The user didn't specify. Hiding for now to keep it clean. */}
-                            
-                            <button type="submit" className="btn-primary full-width">Upload Document</button>
+
+                            <button type="submit" className="btn-primary full-width" disabled={uploading} id="upload-btn">
+                                {uploading ? 'Uploading...' : 'Upload Document'}
+                            </button>
                         </form>
                     </>
                 )}
 
+                {/* Documents */}
                 {activeTab === 'insights' && (
                     <>
-                        <h2>Uploaded Documents Insights</h2>
-                        <div className="card" style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                            {loadingDocs ? (
-                                <p>Loading documents...</p>
-                            ) : documents.length === 0 ? (
-                                <p>No documents uploaded yet.</p>
-                            ) : (
-                                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                        <h2>Uploaded Documents</h2>
+                        {loadingDocs ? <div className="spinner" /> : documents.length === 0 ? (
+                            <div className="data-table-wrapper">
+                                <div className="empty-state">
+                                    <span className="empty-icon">📂</span>
+                                    No documents uploaded yet.
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="data-table-wrapper">
+                                <table className="data-table">
                                     <thead>
-                                        <tr style={{ borderBottom: '1px solid #ddd' }}>
-                                            <th style={{ padding: '10px' }}>Type</th>
-                                            <th style={{ padding: '10px' }}>Context</th>
-                                            <th style={{ padding: '10px' }}>Status</th>
-                                            <th style={{ padding: '10px' }}>Uploaded At</th>
-                                            <th style={{ padding: '10px' }}>Actions</th>
+                                        <tr>
+                                            <th>Type</th>
+                                            <th>Context</th>
+                                            <th>Status</th>
+                                            <th>Uploaded At</th>
+                                            <th>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {documents.map(doc => (
-                                            <tr key={doc.id} style={{ borderBottom: '1px solid #eee' }}>
-                                                <td style={{ padding: '10px' }}><strong>{doc.document_type}</strong></td>
-                                                <td style={{ padding: '10px', fontSize: '0.9em', color: '#555' }}>
-                                                    {doc.department && <span>Dept: {doc.department} <br/></span>}
-                                                    {doc.semester && <span>Sem: {doc.semester} <br/></span>}
-                                                    {doc.section_id && <span>Sec: {doc.section_id} <br/></span>}
-                                                    {doc.regulation_year && <span>Reg: {doc.regulation_year} <br/></span>}
-                                                    {doc.academic_year && <span>AcYear: {doc.academic_year}</span>}
+                                            <tr key={doc.id}>
+                                                <td><strong>{doc.document_type}</strong></td>
+                                                <td style={{ lineHeight: 1.8 }}>
+                                                    {doc.department   && <span style={{ display:'block' }}>Dept: {doc.department}</span>}
+                                                    {doc.semester     && <span style={{ display:'block' }}>Sem: {doc.semester}</span>}
+                                                    {doc.section_id   && <span style={{ display:'block' }}>Sec: {doc.section_id}</span>}
+                                                    {doc.regulation_year && <span style={{ display:'block' }}>Reg: {doc.regulation_year}</span>}
                                                 </td>
-                                                <td style={{ padding: '10px' }}>
-                                                    <span style={{ 
-                                                        padding: '3px 8px', 
-                                                        borderRadius: '12px', 
-                                                        fontSize: '0.85em',
-                                                        backgroundColor: doc.status === 'indexed' ? '#e6f4ea' : doc.status.startsWith('error') ? '#fce8e6' : '#fef7e0',
-                                                        color: doc.status === 'indexed' ? '#137333' : doc.status.startsWith('error') ? '#c5221f' : '#b06000'
-                                                    }}>
+                                                <td>
+                                                    <span className={`status-badge ${statusClass(doc.status)}`}>
                                                         {doc.status}
                                                     </span>
                                                 </td>
-                                                <td style={{ padding: '10px', fontSize: '0.9em' }}>
-                                                    {new Date(doc.uploaded_at).toLocaleString()}
-                                                </td>
-                                                <td style={{ padding: '10px' }}>
-                                                    <button 
-                                                        onClick={() => handleDelete(doc.id)}
-                                                        style={{ 
-                                                            background: '#dc3545', color: 'white', border: 'none', 
-                                                            padding: '5px 10px', borderRadius: '4px', cursor: 'pointer' 
-                                                        }}
-                                                    >
+                                                <td>{new Date(doc.uploaded_at).toLocaleString()}</td>
+                                                <td>
+                                                    <button className="btn-danger" onClick={() => handleDelete(doc.id)}>
                                                         Delete
                                                     </button>
                                                 </td>
@@ -219,54 +215,54 @@ const AdminPortal = () => {
                                         ))}
                                     </tbody>
                                 </table>
-                            )}
-                        </div>
+                            </div>
+                        )}
                     </>
                 )}
 
+                {/* Students */}
                 {activeTab === 'students' && (
                     <>
                         <h2>Registered Students</h2>
-                        <div className="card" style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                            {loadingStudents ? (
-                                <p>Loading students...</p>
-                            ) : students.length === 0 ? (
-                                <p>No students registered yet.</p>
-                            ) : (
-                                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                        {loadingStudents ? <div className="spinner" /> : students.length === 0 ? (
+                            <div className="data-table-wrapper">
+                                <div className="empty-state">
+                                    <span className="empty-icon">👤</span>
+                                    No students registered yet.
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="data-table-wrapper">
+                                <table className="data-table">
                                     <thead>
-                                        <tr style={{ borderBottom: '1px solid #ddd' }}>
-                                            <th style={{ padding: '10px' }}>Name</th>
-                                            <th style={{ padding: '10px' }}>Email</th>
-                                            <th style={{ padding: '10px' }}>Department</th>
-                                            <th style={{ padding: '10px' }}>Academic Info</th>
-                                            <th style={{ padding: '10px' }}>Registered At</th>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Email</th>
+                                            <th>Department</th>
+                                            <th>Academic Info</th>
+                                            <th>Registered</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {students.map(student => (
-                                            <tr key={student.id} style={{ borderBottom: '1px solid #eee' }}>
-                                                <td style={{ padding: '10px' }}><strong>{student.name}</strong></td>
-                                                <td style={{ padding: '10px' }}>{student.college_mail}</td>
-                                                <td style={{ padding: '10px' }}>{student.department}</td>
-                                                <td style={{ padding: '10px', fontSize: '0.9em', color: '#555' }}>
-                                                    Sem: {student.semester} <br/>
-                                                    Sec: {student.section_id} <br/>
-                                                    Reg: {student.regulation_year} <br/>
-                                                    AcYear: {student.academic_year}
+                                        {students.map(s => (
+                                            <tr key={s.id}>
+                                                <td><strong>{s.name}</strong></td>
+                                                <td>{s.college_mail}</td>
+                                                <td><span className="status-badge indexed">{s.department}</span></td>
+                                                <td>
+                                                    Sem {s.semester} · Sec {s.section_id}<br />
+                                                    <span style={{ fontSize:'0.8rem', color:'#888' }}>Reg: {s.regulation_year} · {s.academic_year}</span>
                                                 </td>
-                                                <td style={{ padding: '10px', fontSize: '0.9em' }}>
-                                                    {new Date(student.created_at).toLocaleDateString()}
-                                                </td>
+                                                <td>{new Date(s.created_at).toLocaleDateString()}</td>
                                             </tr>
                                         ))}
                                     </tbody>
                                 </table>
-                            )}
-                        </div>
+                            </div>
+                        )}
                     </>
                 )}
-            </div>
+            </main>
         </div>
     );
 };
