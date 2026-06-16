@@ -39,7 +39,17 @@ def build_timetable_chunks(pdf_path: str, metadata: dict) -> list[dict]:
                 slot_indices = {}
                 start_row = 0
                 for i, row in enumerate(table):
-                    if row and row[0] and 'Slot/Day' in str(row[0]):
+                    if any('Slot 1' in str(c) or 'Slot 2' in str(c) for c in row if c):
+                        # This is the slot row
+                        for col_idx, col_val in enumerate(row):
+                            val = str(col_val).strip()
+                            if val.startswith('Slot '):
+                                slot_indices[col_idx] = val.replace('Slot ', '').strip()
+                            elif val.isdigit():
+                                slot_indices[col_idx] = val
+                        start_row = i + 2
+                        break
+                    elif row and row[0] and 'Slot/Day' in str(row[0]):
                         for col_idx, col_val in enumerate(row[1:], start=1):
                             val = str(col_val).strip()
                             if val and val.isdigit():

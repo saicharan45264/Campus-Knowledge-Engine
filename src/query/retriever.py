@@ -53,18 +53,26 @@ def detect_day(query: str) -> str | None:
             return day
     return None
 
-def query_timetable_db(session: dict, day: str) -> list[dict]:
+def query_timetable_db(session: dict, day: str = None) -> list[dict]:
     from src.db.connection import get_pg_connection, release_pg_connection
     conn = get_pg_connection()
     chunks = []
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT day, slot_number::int, course_abbr, room 
-                FROM timetable_cells 
-                WHERE university_id = %s AND section_id = %s AND day = %s
-                ORDER BY slot_number::int
-            """, (session['university_id'], session.get('section_id'), day))
+            if day:
+                cur.execute("""
+                    SELECT DISTINCT day, slot_number::int, course_abbr, room 
+                    FROM timetable_cells 
+                    WHERE university_id = %s AND section_id = %s AND day = %s
+                    ORDER BY slot_number::int
+                """, (session['university_id'], session.get('section_id'), day))
+            else:
+                cur.execute("""
+                    SELECT DISTINCT day, slot_number::int, course_abbr, room 
+                    FROM timetable_cells 
+                    WHERE university_id = %s AND section_id = %s
+                    ORDER BY day, slot_number::int
+                """, (session['university_id'], session.get('section_id')))
             rows = cur.fetchall()
             for r in rows:
                 text = f"On {r[0]}, Section {session.get('section_id')} has {r[2]} in slot {r[1]} at room {r[3]}."
@@ -86,13 +94,12 @@ def hybrid_retrieve(query: str, intent: str, session: dict, n_semantic=10, n_bm2
         n_bm25 = 150
         n_final = 40
 
-    # If timetable query mentions a day, pull directly from SQL first
+    # If timetable, pull directly from SQL
     sql_chunks = []
     if intent == 'TIMETABLE' and session.get('section_id'):
         day = detect_day(query)
-        if day:
-            sql_chunks = query_timetable_db(session, day)
-            
+        sql_chunks = query_timetable_db(session, day)
+        
     doc_type = intent_to_doctype(intent)
     collection = get_or_create_collection(session['university_id'], doc_type)
     
