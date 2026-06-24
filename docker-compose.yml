@@ -1,14 +1,13 @@
 services:
-  # ──────────────────────────────────────────
-  # PostgreSQL — Metadata, Vector Search (pgvector), FTS
-  # ──────────────────────────────────────────
+
+  # PostgreSQL — stores document metadata and vector embeddings (via pgvector extension)
   postgres:
     image: pgvector/pgvector:pg16
     container_name: cl-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: curriculumlens
-      POSTGRES_USER: cluser
+      POSTGRES_DB:       curriculumlens
+      POSTGRES_USER:     cluser
       POSTGRES_PASSWORD: clpassword
     ports:
       - "5434:5432"
@@ -20,25 +19,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # ──────────────────────────────────────────
-  # Neo4j — Curriculum Knowledge Graph
-  # ──────────────────────────────────────────
+  # Neo4j — stores the Curriculum Knowledge Graph (concepts and relationships)
   neo4j:
     image: neo4j:5.24-community
     container_name: cl-neo4j
     restart: unless-stopped
     environment:
       NEO4J_AUTH: neo4j/clpassword
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
     ports:
-      - "7474:7474"  # Browser UI
-      - "7687:7687"  # Bolt protocol
+      - "7474:7474"  # Neo4j Browser (web UI for inspecting the graph)
+      - "7687:7687"  # Bolt protocol (used by the Python neo4j driver)
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
 
-  # (Note: Backend and Frontend are run natively via uvicorn and npm run dev)
+# Named volumes — data persists across container restarts
 volumes:
   postgres_data:
   neo4j_data:

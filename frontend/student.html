@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CurriculumLens | Student Portal</title>
+    
+    <!-- Google Fonts: Inter for readability, Outfit for headings -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    
+    <!-- Link to shared CSS file -->
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Marked.js: A lightweight library to convert Markdown text into HTML.
+         This allows the AI to send back formatted text like bolding and lists. -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="logo">
+            <span class="logo-text">CurriculumLens Student</span>
+        </div>
+        <div class="nav-links">
+            <!-- Simple logout functionality by redirecting back to login -->
+            <a href="login.html" class="logout-btn">Log Out</a>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="container">
+        <!-- Hero Section: Page title and description -->
+        <header class="hero">
+            <h1>Your Academic Assistant</h1>
+            <p>Ask questions about your curriculum. Answers are grounded in the official course materials.</p>
+        </header>
+
+        <!-- Chat Interface Section -->
+        <section class="chat-container">
+            <!-- The container where chat messages will appear -->
+            <div class="chat-box" id="chat-box">
+                <!-- Initial welcome message from the system -->
+                <div class="message">
+                    <span class="sender-name">System</span>
+                    <div class="document-body">Hello! I am your AI Academic Assistant. What would you like to know about your courses?</div>
+                </div>
+            </div>
+
+            <!-- The sticky input area at the bottom -->
+            <div class="chat-input-wrapper">
+                <!-- Hidden file input for image uploads (restricted to image types only) -->
+                <input type="file" id="image-upload" accept="image/png, image/jpeg, image/jpg" hidden>
+                
+                <form id="chat-form" class="chat-form">
+                    <!-- Button to trigger the hidden file input -->
+                    <button type="button" id="image-upload-btn" class="attach-btn" aria-label="Upload an image" title="Upload an image of an equation, formula, or diagram">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                        </svg>
+                    </button>
+                    <input type="text" id="chat-input" placeholder="Ask a question or upload an image..." required autocomplete="off">
+                    <button type="submit" class="send-btn" aria-label="Send message">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- Link to the external JavaScript file -->
+    <script src="student.js"></script>
+</body>
+</html>

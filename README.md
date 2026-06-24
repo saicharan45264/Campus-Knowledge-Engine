@@ -1,131 +1,157 @@
-# 🎓 CurriculumLens
+# CurriculumLens
 
-**Curriculum-Grounded Multimodal Knowledge Retrieval and Examination Intelligence for Academic Assistance**
+Curriculum-Grounded Knowledge Retrieval and Academic Assistance System
 
-> Final Year Project — Team 81 | VLIL TAG | Dept. of CSE, Amrita Vishwa Vidyapeetham, Coimbatore
-
-## 🔬 Research Contributions
-
-1. **Curriculum Knowledge Graph (CKG) Auto-Construction** — Automatically builds a structured `Course → Unit → Topic → Concept → Formula` graph from syllabi and course materials using LLM-guided NER and relation extraction.
-
-2. **Visual Academic Concept Identifier (VACI)** — A fine-tuned Vision-Language Model (Qwen2-VL + LoRA) that identifies academic concepts from uploaded images of lecture slides, diagrams, formulas, and handwritten notes — going beyond OCR to true visual semantic understanding.
-
-3. **KG-Enhanced Hybrid Retrieval** — Four-path retrieval combining dense vector search (BGE-M3), sparse keyword search (BM25), knowledge graph traversal (Neo4j), and visual similarity search (ColPali) — demonstrably outperforming vanilla RAG through ablation studies.
-
-4. **PYQ Examination Intelligence** — Automated extraction, classification, and analysis of Previous Year Question papers to generate concept frequency heatmaps, difficulty curves, question-type distributions, and data-driven topic importance predictions.
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Next.js 14 Frontend                       │
-│  Chat UI │ KG Explorer │ PYQ Analytics │ Document Manager    │
-├─────────────────────────────────────────────────────────────┤
-│                    FastAPI Backend                            │
-│  Query Router │ VACI │ Retrieval Engine │ LLM Generator      │
-├──────────────────────────┬──────────────────────────────────┤
-│PostgreSQL (with pgvector)│  Neo4j                           │
-│ Metadata & Vector Search │  Curriculum Knowledge Graph      │
-└──────────────────────────┴──────────────────────────────────┘
-```
-
-## 🛠️ Tech Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Frontend** | Next.js 14, React, shadcn/ui, D3.js, Recharts | UI, KG visualization, analytics charts |
-| **Backend** | FastAPI, Python 3.11 | API, background processing, pipeline orchestration |
-| **LLM** | Qwen2.5-7B (Ollama) / Groq API | Response generation |
-| **VLM** | Qwen2-VL-7B + LoRA | Visual concept identification (VACI) |
-| **Embeddings** | BGE-M3, ColPali/ColQwen2 | Text + visual embeddings |
-| **Graph DB** | Neo4j | Curriculum Knowledge Graph |
-| **RDBMS & Vector DB** | PostgreSQL (with pgvector) | Metadata, users, dense vector search, full-text search |
-
-## 🚀 Team Setup Guide (AirDrop Sharing)
-
-If you received this project folder via AirDrop, follow these exact steps to run it natively on your machine.
-
-### Prerequisites (Apps you need to install first)
-- **Docker Desktop**: Must be open and running in the background.
-- **Node.js (v18+)**: To run the frontend UI.
-- **Python (v3.11+)**: To run the backend API.
+A Final Year Project that turns uploaded academic syllabi into a searchable Knowledge Graph, enabling students to ask natural language questions grounded in official course materials.
 
 ---
 
-### Step 1: Open 3 Terminal Tabs
-Open your terminal (or VS Code) and create 3 separate tabs. In **all 3 tabs**, navigate to the extracted `CurriculumLens` folder:
-```bash
-cd path/to/CurriculumLens
+## Project Structure
+
+```
+CurriculumLens/
+|
+|-- backend/                  # Python source files only
+|   |-- app.py                # FastAPI server (all API routes)
+|   |-- database.py           # PostgreSQL and Neo4j connection setup
+|   |-- utils.py              # Core logic: PDF chunking, embeddings, KG extraction
+|
+|-- frontend/                 # HTML/CSS/JS source files only
+|   |-- login.html            # Entry point for the application
+|   |-- login.js              # Handles role-based routing
+|   |-- admin.html            # Admin dashboard: upload and manage documents
+|   |-- admin.js              # Handles PDF uploads, deletions, and system reset
+|   |-- student.html          # Student portal: AI-powered chat interface
+|   |-- student.js            # Handles the AI chat and markdown parsing
+|   |-- style.css             # Shared stylesheet for all pages
+|
+|-- architecture.md           # Beginner-friendly explanation of the tech stack
+|-- api_docs.md               # Explanation of all backend endpoints
+|-- colab_setup.md            # Google Colab cloud GPU setup guide
+|-- troubleshooting.md        # Live-demo crash fixing guide
+|-- .env                      # Environment variables (not committed to git)
+|-- .env.example              # Template for setting up .env
+|-- .gitignore
+|-- .dockerignore
+|-- docker-compose.yml        # Spins up PostgreSQL and Neo4j in Docker
+|-- Dockerfile                # For containerising the backend (optional)
+|-- requirements.txt          # Python dependencies
+|-- readme.md
 ```
 
-### Step 2: Start Infrastructure (Terminal 1)
-Boot up the PostgreSQL and Neo4j databases in Docker:
+---
+
+## How It Works
+
+1. An admin logs in and uploads a PDF syllabus with a course code.
+2. The backend splits the PDF into text chunks.
+3. Each chunk is converted to a vector embedding via Ollama and stored in PostgreSQL.
+4. The LLM extracts concept relationships from each chunk and stores them as a Knowledge Graph in Neo4j.
+5. A student logs in and asks a question.
+6. The system searches PostgreSQL for similar text (vector search) and Neo4j for related concepts (graph traversal).
+7. Both results are combined and passed to the LLM, which returns a grounded, context-aware answer.
+
+---
+
+## Setup
+
+### Requirements
+
+- Docker Desktop (for PostgreSQL and Neo4j)
+- Python 3.11
+- Ollama running locally or tunnelled via Ngrok (e.g. from Google Colab)
+
+### Step 1 — Configure environment
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+OLLAMA_BASE_URL=https://<your-ngrok-url>.ngrok-free.dev
+OLLAMA_MODEL=gemma4:12b-it-qat
+OLLAMA_EMBED_MODEL=nomic-embed-text
+
+POSTGRES_USER=cluser
+POSTGRES_PASSWORD=clpassword
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5434
+POSTGRES_DB=curriculumlens
+
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=clpassword
+```
+
+### Step 2 — Start databases
+
 ```bash
 docker compose up -d
 ```
-*Wait ~10 seconds for the databases to initialize.*
 
-### Step 3: Setup & Run the Backend API (Terminal 2)
-Since virtual environments (`venv`) aren't included in the AirDrop, you need to create one and install dependencies:
+### Step 3 — Set up Python environment
+
+```bash
+python3.11 -m venv backend/venv
+source backend/venv/bin/activate
+pip install --upgrade pip --quiet
+pip install -r requirements.txt --quiet
+```
+
+### Step 4 — Start the backend
+
 ```bash
 cd backend
-python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --port 8000
+python app.py
 ```
-*Wait until you see `🟢 CurriculumLens Backend ready`.*
 
-### Step 4: Setup & Run the Frontend UI (Terminal 3)
-Since `node_modules` aren't included in the AirDrop, you need to install frontend dependencies:
-```bash
-cd frontend
-npm install
-npm run dev
+The server runs at: http://localhost:8000
+
+### Step 5 — Open the frontend
+
+Open the following file directly in your browser (no web server needed):
+
 ```
+frontend/login.html
+```
+
+- Type `admin` to access the Admin Dashboard
+- Type `student` to access the Student Chat Portal
 
 ---
 
-## 🔍 How to Access the Application
+## API Reference
 
-Once all terminals are running without errors, open your browser and navigate to:
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /upload | Upload a PDF and trigger background processing |
+| GET | /documents | List all uploaded documents |
+| DELETE | /documents/{id} | Delete a document and its data |
+| POST | /chat | Submit a question and receive a grounded answer |
+| POST | /reset | Wipe all data (PostgreSQL, Neo4j, uploaded files) |
 
-### 1. The Main Application UI
-- **URL**: [http://localhost:3000](http://localhost:3000)
-- **What to do**: You should see the CurriculumLens frontend interface where you can upload documents and view the graph.
+---
 
-### 2. The Backend API (Swagger UI)
-- **URL**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **What to do**: You can interact directly with the backend APIs here.
+## LLM Configuration
 
-### 3. The Neo4j Knowledge Graph Browser
-- **URL**: [http://localhost:7474](http://localhost:7474)
-- **Credentials**: Username `neo4j`, Password `clpassword`
-- **What to do**: Write Cypher queries to visualize the extracted course concepts and graph structure natively.
+The system uses two separate Ollama models:
 
-## 📊 Evaluation Metrics
+| Model | Purpose | Parameters |
+|-------|---------|------------|
+| `nomic-embed-text` | Converts text chunks into 768-dimensional vectors for semantic search | 137M |
+| `gemma4:12b-it-qat` | Generates answers from retrieved context | 12B |
 
-| Metric | Target |
-|--------|--------|
-| Retrieval Recall@10 | > 85% |
-| Answer Relevance (LLM-as-Judge) | > 4.0/5.0 |
-| Faithfulness (Hallucination Rate) | > 0.90 |
-| VACI Concept ID Accuracy | > 80% |
-| PYQ Concept Linking Accuracy | > 85% |
-| KG vs Vanilla RAG Improvement | > 10% |
-| End-to-End Latency (P50) | < 5s |
+Before running the system, pull both models on your Ollama server:
 
-## 👥 Team
+```bash
+ollama pull nomic-embed-text
+ollama pull gemma4:12b-it-qat
+```
 
-| Name | Role |
-|------|------|
-| Adhikari Chandra Vamsi | Document Processing + Hybrid Retrieval |
-| Boddeti Prem Sai Charan | Curriculum Knowledge Graph + KG Visualization |
-| Manchikanti Pavan Prem Prabhas | VACI + VLM Fine-tuning + ColPali Integration |
-| Pucha Tirupathi Reddy | Frontend + PYQ Intelligence + API Integration |
-
-**Guide**: Dr. Shanmuga Priya S, Assistant Professor (Sl.Gd.), Dept. of CSE
-
-## 📄 License
-
-This project is developed as part of the Final Year Project curriculum at Amrita Vishwa Vidyapeetham.
+- **Google Colab + Ngrok** — Run Ollama on a free T4 GPU, pull both models, and tunnel to your local machine.
+- **Local Ollama** — Run `ollama serve` and pull both models on your laptop.
