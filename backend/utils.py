@@ -149,6 +149,91 @@ def process_pdf_visuals(file_path: str) -> list[dict]:
 
     return pages
 
+import re
+from PIL import Image
+import io
+
+def process_pyq_visuals(file_path: str) -> list[dict]:
+    """
+    Renders pages of a PYQ PDF and dynamically slices them into smaller chunks 
+    (one per question) based on the physical Y-coordinates of question headers.
+    """
+    if not fitz:
+        print("Error: PyMuPDF is not installed. Cannot extract visuals.")
+        return []
+
+    chunks = []
+    try:
+        doc = fitz.open(file_path)
+        zoom_matrix = fitz.Matrix(2, 2)
+        
+        # Regex to match question start markers like "1. ", "2(a). ", "Part A"
+        # Also handles cases where PyMuPDF merges previous line's text with the start
+        q_pattern = re.compile(r'(?:^|\s)(?:\d+[\.\)]\s+|Part\s+[A-Z])', re.IGNORECASE)
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            blocks = page.get_text("blocks")
+            
+            y_coords = []
+            for b in blocks:
+                x0, y0, x1, y1, text, block_no, block_type = b
+                if block_type == 0:
+                    clean_text = text.replace('\n', ' ').strip()
+                    if q_pattern.search(clean_text):
+                        y_coords.append(y0)
+                        
+            # Sort the y-coordinates
+            y_coords = sorted(y_coords)
+            
+            # If no questions found, just use the whole page as one chunk
+            if not y_coords:
+                y_coords = [0]
+            else:
+                # Always start the first chunk at the top of the page if the first question isn't at the very top
+                if y_coords[0] > 50:
+                    y_coords.insert(0, 0)
+                    
+            # Scale coordinates for 2x zoom and add the bottom of the page
+            scaled_y = [int(y * 2) for y in y_coords]
+            pixmap = page.get_pixmap(matrix=zoom_matrix)
+            scaled_y.append(pixmap.height)
+            
+            # Convert PyMuPDF Pixmap to Pillow Image for easy cropping
+            img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+            
+            # Slice the image horizontally
+            for i in range(len(scaled_y) - 1):
+                top = scaled_y[i]
+                # Pad slightly upward for safety, but don't go below 0
+                crop_top = max(0, top - 20) 
+                crop_bottom = scaled_y[i+1]
+                
+                # If chunk is too small (e.g., less than 50 pixels), skip it
+                if crop_bottom - crop_top < 50:
+                    continue
+                    
+                chunk_img = img.crop((0, crop_top, pixmap.width, crop_bottom))
+                
+                # Convert back to base64
+                img_byte_arr = io.BytesIO()
+                chunk_img.save(img_byte_arr, format='JPEG', quality=85)
+                b64_string = base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
+                
+                chunks.append({
+                    "page": page_num,
+                    "chunk_index": i,
+                    "base64": b64_string
+                })
+
+        doc.close()
+    except Exception as e:
+        import traceback
+        print(f"[Vision] Error slicing PYQ pages: {e}")
+        traceback.print_exc()
+
+    return chunks
+
 
 async def describe_uploaded_image(base64_image: str) -> str:
     """
@@ -349,6 +434,8 @@ You are CurriculumLens, an academic AI assistant for university students.
 Answer the student's question using ONLY the information provided in the Context below.
 If the context does not contain enough information to answer, say so clearly.
 
+IMPORTANT: If the Context contains a Markdown image link (e.g. `![PYQ Page - ...](http://...)`), you MUST include that exact Markdown image link in your final answer so the student can see the diagram.
+
 Context:
 {context}
 
@@ -547,7 +634,10 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
                     "images": [base64_image],
                     "format": "json",
                     "stream": False,
-                    "options": {"num_ctx": 8192}
+                    "options": {
+                        "num_ctx": 8192,
+                        "num_predict": 4096
+                    }
                 },
                 timeout=180.0
             )
@@ -571,9 +661,18 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list):
         return
     with neo4j_driver.session() as session:
         for q in questions:
-            q_text = q.get("text", "")
-            likely_topic = q.get("likely_topic", "General")
-            implicit_formulas = q.get("implicit_formulas", [])
+            # Handle cases where the LLM returns an array of strings instead of dicts
+            if isinstance(q, str):
+                q = {"text": q, "question_number": "Unknown", "likely_topic": "General", "implicit_formulas": []}
+                
+            q_text = str(q.get("text", ""))
+            likely_topic = str(q.get("likely_topic", "General"))
+            
+            raw_formulas = q.get("implicit_formulas", [])
+            if not isinstance(raw_formulas, list):
+                raw_formulas = [raw_formulas]
+            implicit_formulas = [str(f) for f in raw_formulas if f is not None]
+            
             q_num = str(q.get("question_number", ""))
             marks = str(q.get("marks", ""))
             

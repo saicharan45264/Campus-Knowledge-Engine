@@ -14,11 +14,12 @@ from sqlalchemy import select, text
 # Pydantic is used to define the structure of incoming data (like JSON requests)
 from pydantic import BaseModel
 import uvicorn
+from fastapi.staticfiles import StaticFiles
 
 # Import our custom database configurations and models
 from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
 from utils import (
-    process_pdf, process_pdf_visuals, describe_page_image, describe_uploaded_image,
+    process_pdf, process_pdf_visuals, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer,
     extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg
 )
@@ -56,6 +57,10 @@ app.add_middleware(
     allow_methods=["*"],       # Allow all HTTP methods (GET, POST, DELETE, etc.)
     allow_headers=["*"],       # Allow all HTTP headers
 )
+
+# Mount the static directory so the frontend can retrieve images
+os.makedirs("uploads/images", exist_ok=True)
+app.mount("/static", StaticFiles(directory="uploads"), name="static")
 
 
 # =============================================================================
@@ -410,24 +415,9 @@ async def process_syllabus_background(file_path: str, department: str, year: str
     if courses:
         build_syllabus_kg(neo4j_driver, department, year, courses)
 
-    # We also store the original smaller text chunks in PostgreSQL for vector search
-    async for db in get_db():
-        for chunk_text in chunks:
-            try:
-                embedding = await get_embedding(chunk_text)
-                if embedding:
-                    new_chunk = DocumentChunk(
-                        document_id=document_id,
-                        content=chunk_text,
-                        content_type="text",
-                        embedding=embedding
-                    )
-                    db.add(new_chunk)
-                    await db.commit()
-            except Exception as e:
-                print(f"[Syllabus] Error inserting chunk: {e}")
-                await db.rollback()
-        break
+    # (Removed redundant vector embedding loop for syllabus text)
+    # The entire Syllabus structure is now perfectly captured in the Neo4j Knowledge Graph,
+    # so we don't need to hammer the Ngrok tunnel with 4,000+ vector embedding requests.
     
     print(f"[Syllabus] Finished processing {department} {year}.")
 
@@ -435,15 +425,16 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
     print(f"[PYQ] Starting processing for {course_code}...")
     neo4j_driver = get_neo4j()
 
-    # Render pages as images
-    page_images = process_pdf_visuals(file_path)
-    print(f"[PYQ] Rendered {len(page_images)} pages as images.")
+    # Render pages as chunked images
+    page_chunks = process_pyq_visuals(file_path)
+    print(f"[PYQ] Rendered {len(page_chunks)} image chunks.")
 
     async for db in get_db():
-        for page_data in page_images:
+        for i, chunk_data in enumerate(page_chunks):
+            print(f"[PYQ] Extracting questions from chunk {i+1}/{len(page_chunks)} via Vision AI...")
             try:
                 # Extract questions via Vision
-                questions = await extract_pyq_questions(page_data["base64"])
+                questions = await extract_pyq_questions(chunk_data["base64"])
                 
                 if not questions:
                     continue
@@ -452,9 +443,28 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                 map_questions_to_kg(neo4j_driver, course_code, questions)
 
                 # Store the extracted questions as searchable text chunks in PG
+                
+                # Save the physical image of the chunk to the disk so the frontend can display it
+                image_bytes = base64.b64decode(chunk_data["base64"])
+                page_num = chunk_data['page'] + 1
+                chunk_index = chunk_data['chunk_index']
+                image_filename = f"images/{document_id}_page_{page_num}_chunk_{chunk_index}.jpg"
+                image_path = f"uploads/{image_filename}"
+                
+                os.makedirs("uploads/images", exist_ok=True)
+                with open(image_path, "wb") as f:
+                    f.write(image_bytes)
+                
                 for q in questions:
+                    if isinstance(q, str):
+                        q = {"text": q, "question_number": "Unknown", "likely_topic": "General", "implicit_formulas": []}
+                        
                     q_text = q.get("text", "")
-                    labeled_content = f"[PYQ - {course_code} - {q.get('question_number')}]\n{q_text}\nImplicit Formulas: {', '.join(q.get('implicit_formulas', []))}"
+                    
+                    # Append the markdown image link so the LLM includes it in the chat
+                    markdown_image = f"![PYQ Page - {course_code}](http://localhost:8000/static/{image_filename})"
+                    
+                    labeled_content = f"[PYQ - {course_code} - {q.get('question_number')}]\n{q_text}\nImplicit Formulas: {', '.join(q.get('implicit_formulas', []))}\n\n{markdown_image}"
                     
                     embedding = await get_embedding(labeled_content)
                     if embedding:
@@ -470,7 +480,7 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
 
             except Exception as e:
                 import traceback
-                print(f"[PYQ] Error processing page {page_data['page'] + 1}: {e}")
+                print(f"[PYQ] Error processing chunk {chunk_data['chunk_index']} on page {chunk_data['page'] + 1}: {e}")
                 traceback.print_exc()
                 await db.rollback()
         break
