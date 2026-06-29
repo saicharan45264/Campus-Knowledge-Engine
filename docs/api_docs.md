@@ -17,7 +17,7 @@ This page allows you to see all the endpoints and even test them directly from y
 - **Behind the scenes:**
   - Saves the PDF to the `uploads/` folder.
   - Returns a success message to the frontend immediately.
-  - Spawns a background task to extract the text, generate vector embeddings, and build the Neo4j knowledge graph without making the user wait.
+  - Spawns a background task: Syllabus PDFs are parsed via a deterministic Regex engine, while PYQ PDFs are dynamically sliced into individual question images via PyMuPDF/Pillow and processed by the Multimodal Vision AI.
 - **Used in:** `frontend/admin.js`
 
 ### 2. List Documents
@@ -37,10 +37,10 @@ This page allows you to see all the endpoints and even test them directly from y
 - **What it does:** Receives a question from a student and returns an AI-generated answer.
 - **Behind the scenes:**
   - Converts the question into a vector using the `nomic-embed-text` model.
-  - Searches PostgreSQL for the 3 most similar text chunks.
+  - Searches PostgreSQL for the 10 most similar text chunks (which may contain Markdown links to cropped PYQ images).
   - Searches Neo4j for related concepts based on the words in the question.
   - Combines the text and graph facts into a single "Context" block.
-  - Sends the Context and the Question to `gemma4:12b-it-qat` to generate the final answer.
+  - Sends the Context and the Question to `gemma4:12b-it-qat` to generate the final answer, rendering diagrams directly in the chat if available.
 - **Used in:** `frontend/student.js`
 
 ### 5. System Reset (Danger Zone)

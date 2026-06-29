@@ -13,7 +13,11 @@ FastAPI is a modern Python web framework. We use it because it is:
 - **Simple:** It is much easier to read and write than older frameworks like Django.
 
 **What does the backend do?**
-The backend receives PDFs from the admin, talks to the AI models (Ollama), saves data into our databases, and answers questions from the student.
+The backend receives PDFs from the admin and processes them differently based on type:
+- **Syllabus:** Uses a highly deterministic Regex parser to build structured topics.
+- **PYQs (Past Papers):** Uses `PyMuPDF` to analyze the invisible text layout and find Y-coordinates of questions, then uses `Pillow` (PIL) to dynamically slice the high-resolution page image into perfectly cropped question chunks. 
+
+These processed chunks are sent to the AI models (Ollama), saved into our databases (with cropped images saved to disk), and used to answer questions from the student.
 
 ---
 
@@ -43,9 +47,9 @@ We use **two different models** to maximize speed and quality:
    - **Purpose:** To convert text into numbers (vectors).
    - **Why:** It is specifically trained to group similar texts together. Because it is small, it processes large PDFs very quickly.
 
-2. **`gemma4:12b-it-qat` (Large & Smart):**
-   - **Purpose:** To read the context we retrieved from the databases and write a human-like answer for the student.
-   - **Why:** It has 12 billion parameters, making it extremely smart and capable of writing high-quality academic responses.
+2. **`gemma4:12b-it-qat` (Large Multimodal Vision Model):**
+   - **Purpose:** To read the context retrieved from the databases and write a human-like answer. It also processes the dynamically cropped PYQ image chunks to accurately transcribe math formulas and circuits.
+   - **Why:** It has 12 billion parameters and multimodal vision capabilities, making it capable of understanding complex electrical circuits and writing high-quality academic responses.
 
 ---
 

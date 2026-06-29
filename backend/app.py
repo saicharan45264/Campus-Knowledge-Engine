@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 # Import our custom database configurations and models
 from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
 from utils import (
-    process_pdf, process_pdf_visuals, process_pyq_visuals, describe_page_image, describe_uploaded_image,
+    process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer,
     extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg
 )

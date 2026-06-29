@@ -116,38 +116,7 @@ async def describe_page_image(base64_image: str, page_num: int) -> str:
         return ""
 
 
-def process_pdf_visuals(file_path: str) -> list[dict]:
-    """
-    Renders every page of a PDF as a high-resolution image and returns the
-    raw image data (as base64 strings) for each page.
-    The actual vision API calls happen asynchronously in the background task.
-    Returns a list of {"page": int, "base64": str} dictionaries.
-    """
-    if not fitz:
-        print("Error: PyMuPDF is not installed. Cannot extract visuals.")
-        return []
 
-    pages = []
-    try:
-        doc = fitz.open(file_path)
-        # 2x zoom renders at 144 DPI instead of the default 72 DPI,
-        # giving the vision model a much clearer image to analyze.
-        zoom_matrix = fitz.Matrix(2, 2)
-
-        for page_num in range(len(doc)):
-            # Render the entire page as a PNG image
-            pixmap = doc[page_num].get_pixmap(matrix=zoom_matrix)
-            # Convert the raw pixel data to PNG bytes
-            image_bytes = pixmap.tobytes("png")
-            # Encode to base64 string (required by Ollama's images parameter)
-            b64_string = base64.b64encode(image_bytes).decode("utf-8")
-            pages.append({"page": page_num, "base64": b64_string})
-
-        doc.close()
-    except Exception as e:
-        print(f"[Vision] Error rendering PDF pages: {e}")
-
-    return pages
 
 import re
 from PIL import Image

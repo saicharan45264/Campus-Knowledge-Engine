@@ -32,16 +32,24 @@ During your Final Year Project (FYP) defence or presentation, things might go wr
 
 ---
 
-## 4. "Ollama API Error" or "Model Not Found"
-**Symptom:** You ask a question in the chat, and it loads forever or returns an error saying the Ollama model failed.
+## 4. "Ollama API Error" or "ERR_NGROK_3200"
+**Symptom:** You ask a question in the chat, and it loads forever. Or you check the Admin dashboard and Ngrok returns a 3200 Tunnel Not Found error.
 **Cause:** The backend cannot reach your Google Colab machine, or the Ngrok URL has expired.
 **Fix:**
 1. Google Colab instances shut down after a few hours of inactivity. Go back to your Colab notebook.
 2. Click **Runtime > Restart Session**.
 3. Run the setup script again.
 4. Copy the **NEW** `ngrok-free.app` URL it prints out at the bottom.
-5. Paste that new URL into your local `.env` file under `OLLAMA_BASE_URL`.
-6. Restart your Python backend (`CTRL+C` to stop it, then `python app.py` to start it again).
+5. Paste that new URL into your Admin Dashboard API settings (or your local `.env` file).
+6. Click **System Reset** to clear any half-processed documents that failed when the tunnel died, and re-upload.
+
+---
+
+## 5. "Exception in ASGI application" / CypherTypeError
+**Symptom:** You upload a PYQ, but it skips most of the questions and the terminal throws `neo4j.exceptions.CypherTypeError`.
+**Cause:** The Multimodal Vision AI hallucinated and returned complex nested arrays instead of plain text strings. Neo4j strictly refuses to save nested objects into Knowledge Graph nodes, causing a fatal crash.
+**Fix:**
+- This was permanently patched by adding a strict sanitization layer in `utils.py` that forces all LLM outputs to strings. If it happens again with a new field, ensure that field is wrapped in `str(q.get("field", ""))` before saving to Neo4j.
 
 ---
 

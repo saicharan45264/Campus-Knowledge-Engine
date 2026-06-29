@@ -14,7 +14,8 @@ CurriculumLens/
 |-- backend/                  # Python source files only
 |   |-- app.py                # FastAPI server (all API routes)
 |   |-- database.py           # PostgreSQL and Neo4j connection setup
-|   |-- utils.py              # Core logic: PDF chunking, embeddings, KG extraction
+|   |-- utils.py              # Core logic: PYQ chunking, embeddings, Syllabus regex, Vision AI
+|   |-- uploads/              # Local storage for PDFs and dynamically cropped PYQ images
 |
 |-- frontend/                 # HTML/CSS/JS source files only
 |   |-- login.html            # Entry point for the application
@@ -43,13 +44,22 @@ CurriculumLens/
 
 ## How It Works
 
-1. An admin logs in and uploads a PDF syllabus with a course code.
-2. The backend splits the PDF into text chunks.
-3. Each chunk is converted to a vector embedding via Ollama and stored in PostgreSQL.
-4. The LLM extracts concept relationships from each chunk and stores them as a Knowledge Graph in Neo4j.
-5. A student logs in and asks a question.
-6. The system searches PostgreSQL for similar text (vector search) and Neo4j for related concepts (graph traversal).
-7. Both results are combined and passed to the LLM, which returns a grounded, context-aware answer.
+**For Syllabus Uploads:**
+1. The backend parses the syllabus text.
+2. A highly precise, deterministic Regex engine maps out every Unit and Topic into a structured format.
+3. The structured topics are written directly to the Neo4j Knowledge Graph.
+
+**For Past Year Questions (PYQs):**
+1. `PyMuPDF` scans the invisible text layout to find exact Y-coordinates of question headers.
+2. `Pillow` dynamically slices the high-res page image into individual question chunks.
+3. The cropped chunks are sent to a Multimodal Vision AI (`gemma4`) which accurately transcribes the question text and extracts implicit formulas.
+4. The question text is embedded as vectors in PostgreSQL, while relationships and models are mapped into Neo4j. The original cropped circuit diagram is also saved.
+
+**For Answering Questions:**
+1. A student asks a question in the chat portal.
+2. The system searches PostgreSQL for similar text (vector search) and Neo4j for related concepts (graph traversal).
+3. The retrieved context (which includes Markdown links to the cropped PYQ circuit diagrams) is passed to the LLM.
+4. The LLM generates a grounded answer, displaying the perfectly cropped diagrams natively in the chat!
 
 ---
 
