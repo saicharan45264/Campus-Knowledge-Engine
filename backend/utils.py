@@ -137,8 +137,8 @@ def process_pyq_visuals(file_path: str) -> list[dict]:
         zoom_matrix = fitz.Matrix(2, 2)
         
         # Regex to match question start markers like "1. ", "2(a). ", "Part A"
-        # Also handles cases where PyMuPDF merges previous line's text with the start
-        q_pattern = re.compile(r'(?:^|\s)(?:\d+[\.\)]\s+|Part\s+[A-Z])', re.IGNORECASE)
+        # It must be at the very start of the text block to prevent false positives.
+        q_pattern = re.compile(r'^(?:\d+[\.\)]\s+|Part\s+[A-Z])', re.IGNORECASE)
 
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -619,8 +619,15 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
             if match:
                 res_text = match.group(0)
                 
-            data = json.loads(res_text)
-            return data.get("questions", [])
+            try:
+                data = json.loads(res_text)
+                return data.get("questions", [])
+            except json.JSONDecodeError as e:
+                print(f"JSON Parse Error: {e}. Falling back to raw text.")
+                # If the AI hallucinates broken JSON, don't lose the data! 
+                # Save the raw text into the database anyway.
+                return [{"question_number": "PYQ", "text": res_text, "likely_topic": "General", "implicit_formulas": []}]
+                
     except Exception as e:
         print(f"Failed to extract PYQ questions: {e}")
         return []
