@@ -21,7 +21,7 @@ from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
 from utils import (
     process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer,
-    extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg
+    extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text
 )
 
 from typing import List, Optional
@@ -80,29 +80,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     question = request.message
     context_parts = []
 
-    # --- Step 1: Vector Search in PostgreSQL ---
-    # First, convert the student's question into a mathematical vector (embedding)
-    question_embedding = await get_embedding(question)
-
-    if question_embedding:
-        try:
-            # Query the database to find the top 10 text chunks whose embeddings are
-            # mathematically closest (cosine distance) to the question's embedding.
-            query = select(DocumentChunk).order_by(
-                DocumentChunk.embedding.cosine_distance(question_embedding)
-            ).limit(10)
-            
-            result = await db.execute(query)
-            similar_chunks = result.scalars().all()
-
-            if similar_chunks:
-                context_parts.append("--- RELEVANT TEXT FROM DOCUMENTS ---")
-                for chunk in similar_chunks:
-                    context_parts.append(chunk.content)
-        except Exception as e:
-            print(f"Postgres vector search error: {e}")
-
-    # --- Step 2: Graph Search in Neo4j ---
+    # --- Step 1: Graph Search in Neo4j (Structured Knowledge First) ---
     try:
         neo4j_driver = get_neo4j()
         # Extract keywords from the question, ignoring short stop words like "the", "for", "me"
@@ -115,7 +93,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             words = raw_words
 
         with neo4j_driver.session() as session:
-            # Query the graph: Find any courses or topics matching the question.
+            # Query 1: Find any courses or topics matching the question.
             records = session.run(
                 """
                 MATCH (n)
@@ -170,6 +148,28 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                     fact += f"  - {unit}: " + ", ".join(topics) + "\n"
                 graph_facts.append(fact)
 
+            # Query 2: Search PYQ Question & QuestionModel nodes in Neo4j (fetch across all uploaded documents)
+            pyq_records = session.run(
+                """
+                MATCH (c:Course)-[:HAS_QUESTION_MODEL]->(qm:QuestionModel)-[:HAS_QUESTION]->(q:Question)
+                WHERE any(word IN $words WHERE toLower(q.text) CONTAINS word OR toLower(qm.name) CONTAINS word OR (q.implicit_formulas IS NOT NULL AND any(f IN q.implicit_formulas WHERE toLower(f) CONTAINS word)))
+                RETURN c.code as course_code, qm.name as model_name, q.question_number as q_num, q.text as q_text, q.implicit_formulas as formulas, q.image_url as image_url
+                LIMIT 25
+                """,
+                words=words
+            )
+            for pr in pyq_records:
+                q_text = pr['q_text']
+                if q_text:
+                    q_fact = f"[PYQ - Course {pr['course_code']} - {pr['q_num']}] Question: {q_text}"
+                    if pr['formulas']:
+                        cleaned_f = [clean_formula_text(f) for f in pr['formulas'] if clean_formula_text(f)]
+                        if cleaned_f:
+                            q_fact += f" (Formulas: {', '.join(cleaned_f)})"
+                    if pr['image_url']:
+                        q_fact += f"\n![Diagram for {pr['q_num']}]({pr['image_url']})"
+                    graph_facts.append(q_fact)
+
             if graph_facts:
                 context_parts.append("--- KNOWLEDGE GRAPH FACTS ---")
                 context_parts.extend(graph_facts)
@@ -183,13 +183,31 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     except Exception as e:
         print(f"Neo4j graph search error: {e}")
 
+    # --- Step 2: Vector Search in PostgreSQL ---
+    question_embedding = await get_embedding(question)
+
+    if question_embedding:
+        try:
+            query = select(DocumentChunk).order_by(
+                DocumentChunk.embedding.cosine_distance(question_embedding)
+            ).limit(10)
+            
+            result = await db.execute(query)
+            similar_chunks = result.scalars().all()
+
+            if similar_chunks:
+                context_parts.append("--- RELEVANT TEXT FROM DOCUMENTS ---")
+                for chunk in similar_chunks:
+                    context_parts.append(chunk.content)
+        except Exception as e:
+            print(f"Postgres vector search error: {e}")
+
     # --- Step 3: Generate the Final AI Answer ---
-    # Combine all retrieved text chunks and graph facts into one large context block
     final_context = "\n".join(context_parts)
     
     # Truncate context to prevent LLM context-window overflow or timeouts
-    if len(final_context) > 1500:
-        final_context = final_context[:1500] + "\n...[Context Truncated for Length]..."
+    if len(final_context) > 3000:
+        final_context = final_context[:3000] + "\n...[Context Truncated for Length]..."
         
     print("DEBUG FINAL CONTEXT:")
     print(final_context)
@@ -284,16 +302,75 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
 async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
     """
     Permanently deletes a document and all of its associated text chunks
-    from the PostgreSQL database.
+    from PostgreSQL, Neo4j, and the local file system.
     """
     try:
-        # First, delete all child chunks associated with this document
+        # 1. Fetch document metadata first
+        doc_uuid = uuid.UUID(doc_id) if isinstance(doc_id, str) else doc_id
+        result = await db.execute(select(Document).where(Document.id == doc_uuid))
+        doc = result.scalar_one_or_none()
+
+        if doc:
+            c_code = doc.course_code.upper() if doc.course_code else None
+
+            # 2. Delete from Neo4j Graph Database
+            try:
+                neo4j_driver = get_neo4j()
+                with neo4j_driver.session() as session:
+                    if doc.doc_type == "pyq":
+                        # Delete Question nodes tagged with this document_id or course_code
+                        session.run("""
+                            MATCH (q:Question)
+                            WHERE q.document_id = $doc_id OR (q.course_code = $c_code AND $c_code IS NOT NULL)
+                            DETACH DELETE q
+                        """, doc_id=str(doc_id), c_code=c_code)
+                        
+                        # Delete orphan QuestionModel nodes
+                        session.run("""
+                            MATCH (qm:QuestionModel)
+                            WHERE NOT (qm)-[:HAS_QUESTION]->()
+                            DETACH DELETE qm
+                        """)
+                        
+                        # Delete orphan Course nodes if they have no units and no question models
+                        session.run("""
+                            MATCH (c:Course)
+                            WHERE NOT (c)-[:HAS_UNIT]->() AND NOT (c)-[:HAS_QUESTION_MODEL]->()
+                            DETACH DELETE c
+                        """)
+
+                    elif doc.doc_type == "syllabus":
+                        if c_code:
+                            session.run("""
+                                MATCH (c:Course {code: $c_code})
+                                OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)
+                                OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                                DETACH DELETE t, u
+                            """, c_code=c_code)
+                            session.run("""
+                                MATCH (c:Course {code: $c_code})
+                                WHERE NOT (c)-[:HAS_UNIT]->() AND NOT (c)-[:HAS_QUESTION_MODEL]->()
+                                DETACH DELETE c
+                            """, c_code=c_code)
+            except Exception as graph_err:
+                print(f"Error cleaning up Neo4j for document {doc_id}: {graph_err}")
+
+            # 3. Clean up physical image files from disk
+            try:
+                images_dir = "uploads/images"
+                if os.path.exists(images_dir):
+                    for fname in os.listdir(images_dir):
+                        if str(doc_id) in fname:
+                            os.remove(os.path.join(images_dir, fname))
+            except Exception as fs_err:
+                print(f"Error deleting physical files for document {doc_id}: {fs_err}")
+
+        # 4. Delete child chunks and parent document from PostgreSQL
         await db.execute(text("DELETE FROM document_chunks WHERE document_id = :id"), {"id": doc_id})
-        # Then, delete the parent document record itself
         await db.execute(text("DELETE FROM documents WHERE id = :id"), {"id": doc_id})
         
         await db.commit()
-        return {"message": "Document deleted successfully."}
+        return {"message": "Document and its associated graph nodes deleted successfully."}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -499,21 +576,20 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                 if not questions:
                     continue
 
-                # Map extracted questions into the KG
-                map_questions_to_kg(neo4j_driver, course_code, questions)
-
-                # Store the extracted questions as searchable text chunks in PG
-                
                 # Save the physical image of the chunk to the disk so the frontend can display it
                 image_bytes = base64.b64decode(chunk_data["base64"])
                 page_num = chunk_data['page'] + 1
                 chunk_index = chunk_data['chunk_index']
                 image_filename = f"images/{document_id}_page_{page_num}_chunk_{chunk_index}.jpg"
                 image_path = f"uploads/{image_filename}"
+                image_url = f"http://localhost:8000/static/{image_filename}"
                 
                 os.makedirs("uploads/images", exist_ok=True)
                 with open(image_path, "wb") as f:
                     f.write(image_bytes)
+
+                # Map extracted questions into the KG
+                map_questions_to_kg(neo4j_driver, course_code, questions, document_id, image_url)
                 
                 for q in questions:
                     if isinstance(q, str):

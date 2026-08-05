@@ -401,9 +401,9 @@ async def generate_answer(question: str, context: str) -> str:
     prompt = f"""
 You are CurriculumLens, an academic AI assistant for university students.
 Answer the student's question using ONLY the information provided in the Context below.
-If the context does not contain enough information to answer, say so clearly.
+If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
 
-IMPORTANT: If the Context contains a Markdown image link (e.g. `![PYQ Page - ...](http://...)`), you MUST include that exact Markdown image link in your final answer so the student can see the diagram.
+IMPORTANT: If the Context contains Markdown image links for diagrams (e.g. `![Diagram for ...](http://...)`), you MUST include EVERY Markdown image link directly under its corresponding question in your final answer so the student can see the circuit/diagram images.
 
 Context:
 {context}
@@ -613,26 +613,59 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
             response.raise_for_status()
             res_text = response.json().get("response", "{}")
             
-            # Robust JSON extraction to handle markdown and extra text
+            # Robust JSON extraction to handle markdown, control characters, and invalid JSON escaping
             import re
             match = re.search(r'\{.*\}', res_text, re.DOTALL)
-            if match:
-                res_text = match.group(0)
-                
+            clean_text = match.group(0) if match else res_text
+            
             try:
-                data = json.loads(res_text)
-                return data.get("questions", [])
-            except json.JSONDecodeError as e:
-                print(f"JSON Parse Error: {e}. Falling back to raw text.")
-                # If the AI hallucinates broken JSON, don't lose the data! 
-                # Save the raw text into the database anyway.
-                return [{"question_number": "PYQ", "text": res_text, "likely_topic": "General", "implicit_formulas": []}]
-                
+                data = json.loads(clean_text)
+                if isinstance(data, dict) and "questions" in data:
+                    return data["questions"]
+            except Exception:
+                pass
+
+            # Sanitize control characters (e.g. \u001e)
+            try:
+                sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_text)
+                data = json.loads(sanitized)
+                if isinstance(data, dict) and "questions" in data:
+                    return data["questions"]
+            except Exception:
+                pass
+
+            # Regex fallback: extract "text": "..." fields directly
+            extracted = []
+            text_matches = re.findall(r'"text"\s*:\s*"([^"]+)"', clean_text)
+            for q_t in text_matches:
+                if len(q_t) > 5:
+                    extracted.append({"question_number": "PYQ", "text": q_t, "likely_topic": "General", "implicit_formulas": []})
+            if extracted:
+                return extracted
+
+            # Final fallback: return clean text instead of raw JSON string
+            clean_human_text = re.sub(r'[{}"\[\]]', '', clean_text).strip()
+            return [{"question_number": "PYQ", "text": clean_human_text, "likely_topic": "General", "implicit_formulas": []}]
+
     except Exception as e:
         print(f"Failed to extract PYQ questions: {e}")
         return []
 
-def map_questions_to_kg(neo4j_driver, course_code: str, questions: list):
+def clean_formula_text(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace('\t', '\\t')
+    text = text.replace('\x00', '')
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+    # Fix LaTeX commands lost during JSON unescaping (e.g. imes -> \times, rac -> \frac)
+    text = re.sub(r'\bimes\b', r'\\times', text)
+    text = re.sub(r'\brac\b', r'\\frac', text)
+    # Sanitize repetitive OCR noise characters
+    text = re.sub(r'[^\w\s\+\-\*\/\=\(\)\[\]\{\}\\\$\.\,\:\_\^\@\%]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def map_questions_to_kg(neo4j_driver, course_code: str, questions: list, document_id: str = None, image_url: str = None):
     if not questions:
         return
     with neo4j_driver.session() as session:
@@ -647,7 +680,7 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list):
             raw_formulas = q.get("implicit_formulas", [])
             if not isinstance(raw_formulas, list):
                 raw_formulas = [raw_formulas]
-            implicit_formulas = [str(f) for f in raw_formulas if f is not None]
+            implicit_formulas = [clean_formula_text(str(f)) for f in raw_formulas if f is not None and len(clean_formula_text(str(f))) > 1]
             
             q_num = str(q.get("question_number", ""))
             marks = str(q.get("marks", ""))
@@ -663,7 +696,10 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list):
                     text: $q_text, 
                     question_number: $q_num, 
                     marks: $marks, 
-                    implicit_formulas: $implicit_formulas
+                    implicit_formulas: $implicit_formulas,
+                    document_id: $doc_id,
+                    course_code: $c_code,
+                    image_url: $image_url
                 })
                 MERGE (qm)-[:HAS_QUESTION]->(q)
-            """, c_code=course_code, qm_name=qm_name, q_text=q_text, q_num=q_num, marks=marks, implicit_formulas=implicit_formulas)
+            """, c_code=course_code, qm_name=qm_name, q_text=q_text, q_num=q_num, marks=marks, implicit_formulas=implicit_formulas, doc_id=str(document_id) if document_id else "", image_url=str(image_url) if image_url else "")
