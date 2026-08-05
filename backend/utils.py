@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # Load environment variables from the .env file at the project root.
 # os.path.dirname(__file__) gives us the 'backend/' folder.
 # '..' moves us one level up to the root folder where '.env' is stored.
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'), override=True)
 
 # PyMuPDF (imported as 'fitz') is the library we use to read text out of PDF files.
 # We wrap it in a try/except block just in case it fails to install on some machines.
@@ -425,7 +425,7 @@ Answer:
                         "num_ctx": 8192
                     }
                 },
-                timeout=120.0
+                timeout=300.0
             )
             response.raise_for_status()
             # Return the generated text string

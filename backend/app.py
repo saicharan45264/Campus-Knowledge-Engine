@@ -105,35 +105,95 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     # --- Step 2: Graph Search in Neo4j ---
     try:
         neo4j_driver = get_neo4j()
-        # Extract basic keywords from the question
-        words = question.lower().split()
+        # Extract keywords from the question, ignoring short stop words like "the", "for", "me"
+        raw_words = question.lower().split()
+        stop_words = {"get", "me", "the", "for", "and", "with", "this", "that", "course", "syllabus"}
+        words = [w for w in raw_words if len(w) > 3 and w not in stop_words]
+        
+        # If no meaningful words remain, fallback to raw words
+        if not words:
+            words = raw_words
 
         with neo4j_driver.session() as session:
-            # Cypher query: Find any concept relationships (Subject -> Predicate -> Object)
-            # where either the Subject or the Object matches a keyword in the question.
+            # Query the graph: Find any courses or topics matching the question.
             records = session.run(
                 """
-                MATCH (c:Course)-[:HAS_CONCEPT]->(subj:Concept)-[r]->(obj:Concept)
-                WHERE toLower(subj.name) IN $words OR toLower(obj.name) IN $words
-                RETURN subj.name, type(r), obj.name
-                LIMIT 5
+                MATCH (n)
+                WHERE (n:Course OR n:Topic OR n:SubTopic)
+                AND all(word IN $words WHERE toLower(n.name) CONTAINS word OR toLower(n.code) CONTAINS word)
+                
+                // If the matched node is a Topic/Subtopic, find its parent Course
+                OPTIONAL MATCH (c:Course)-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic)
+                WHERE n = t OR (t)-[:HAS_SUBTOPIC]->(n)
+                
+                // Identify the main course to pull the syllabus for
+                WITH coalesce(c, n) as target_course, n as matched_node
+                LIMIT 3
+                
+                // Now pull the full syllabus for the target_course
+                OPTIONAL MATCH (target_course:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+                
+                RETURN 
+                    target_course.code as course_code,
+                    target_course.name as course_name,
+                    labels(matched_node) as match_type,
+                    matched_node.name as matched_node_name,
+                    u.title as unit_title,
+                    t.name as topic_name
                 """,
                 words=words
             )
-            # Format the results into readable sentences
-            graph_facts = [
-                f"{r['subj.name']} {r['type(r)']} {r['obj.name']}"
-                for r in records
-            ]
+            
+            graph_facts = []
+            syllabus_dict = {}
+            
+            for r in records:
+                c_code = r['course_code']
+                if not c_code: continue
+                
+                if r['unit_title'] and r['topic_name']:
+                    if c_code not in syllabus_dict:
+                        syllabus_dict[c_code] = {"name": r['course_name'], "units": {}}
+                    if r['unit_title'] not in syllabus_dict[c_code]["units"]:
+                        syllabus_dict[c_code]["units"][r['unit_title']] = []
+                    
+                    # Avoid duplicates
+                    if r['topic_name'] not in syllabus_dict[c_code]["units"][r['unit_title']]:
+                        syllabus_dict[c_code]["units"][r['unit_title']].append(r['topic_name'])
+                else:
+                    m_type = r['match_type'][0] if r['match_type'] else "Unknown"
+                    graph_facts.append(f"[Course {c_code} - {m_type}] {r['matched_node_name']}")
+
+            for c_code, data in syllabus_dict.items():
+                fact = f"Course Syllabus for [{c_code}] {data['name']}:\n"
+                for unit, topics in data['units'].items():
+                    fact += f"  - {unit}: " + ", ".join(topics) + "\n"
+                graph_facts.append(fact)
+
             if graph_facts:
                 context_parts.append("--- KNOWLEDGE GRAPH FACTS ---")
                 context_parts.extend(graph_facts)
+            else:
+                # Fallback: If no specific course matched, list all available courses
+                fallback_records = session.run("MATCH (c:Course) RETURN c.code as code, c.name as name")
+                all_courses = [f"[{r['code']}] {r['name']}" for r in fallback_records]
+                if all_courses:
+                    context_parts.append("--- AVAILABLE COURSES IN THE DATABASE ---")
+                    context_parts.append("\n".join(all_courses))
     except Exception as e:
         print(f"Neo4j graph search error: {e}")
 
     # --- Step 3: Generate the Final AI Answer ---
     # Combine all retrieved text chunks and graph facts into one large context block
     final_context = "\n".join(context_parts)
+    
+    # Truncate context to prevent LLM context-window overflow or timeouts
+    if len(final_context) > 1500:
+        final_context = final_context[:1500] + "\n...[Context Truncated for Length]..."
+        
+    print("DEBUG FINAL CONTEXT:")
+    print(final_context)
+    
     # Ask the AI model to answer the question using ONLY the provided context
     ai_response = await generate_answer(question, final_context)
     

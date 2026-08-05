@@ -25,7 +25,7 @@ from neo4j import GraphDatabase
 # Load environment variables from the .env file located at the project root.
 # os.path.dirname(__file__) gives us the 'backend/' folder.
 # '..' moves us one level up to the root folder where '.env' is located.
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'), override=True)
 
 
 # =============================================================================
