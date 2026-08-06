@@ -307,7 +307,9 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         if neo4j_results:
             context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
             for record in neo4j_results:
-                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}\nImage: {record['image_url']}\nMarks: {record['marks']}\nBTL: {record['btl']}")
+                img_url = record['image_url'].replace(' ', '%20') if record.get('image_url') else None
+                img_markdown = f"\n![Diagram for Q{record['q_num']}]({img_url})" if img_url and img_url != "None" else ""
+                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}{img_markdown}\nMarks: {record['marks']}\nBTL: {record['btl']}")
         else:
             question_embedding = await get_embedding(question)
             if question_embedding:

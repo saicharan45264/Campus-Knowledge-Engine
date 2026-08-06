@@ -962,8 +962,15 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
 
 def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     """Search for PYQ questions in Neo4j by keyword matching on question text."""
-    stop_words = {"get", "me", "a", "the", "all", "questions", "question", 
-                  "on", "about", "find", "show", "list", "give", "related"}
+    stop_words = {
+        "get", "me", "a", "the", "all", "questions", "question", 
+        "on", "about", "find", "show", "list", "give", "related",
+        "are", "there", "any", "is", "what", "how", "why", "who", "where",
+        "can", "you", "tell", "explain", "describe", "provide",
+        "in", "of", "to", "for", "with", "and", "or", "not", "this", "that",
+        "do", "does", "did", "have", "has", "had", "would", "could", "should",
+        "some", "from", "by", "an", "it", "they", "we", "he", "she", "which"
+    }
     words = [w.strip(".,!?-'\"") for w in question.lower().split() 
              if len(w) > 2 and w not in stop_words]
 
@@ -973,7 +980,7 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     with neo4j_driver.session() as session:
         records = session.run("""
             MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-            WHERE all(word IN $words WHERE toLower(q.text) CONTAINS word)
+            WHERE all(word IN $words WHERE replace(toLower(q.text), "'", "") CONTAINS word)
             RETURN q.text AS q_text, q.btl AS btl, q.marks AS marks,
                    q.image_url AS image_url, c.code AS course_code,
                    q.question_number AS q_num
