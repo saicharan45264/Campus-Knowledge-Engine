@@ -425,13 +425,15 @@ Answer:
                         "num_ctx": 8192
                     }
                 },
-                timeout=300.0
+                timeout=45.0
             )
             response.raise_for_status()
             # Return the generated text string
             return response.json().get("response", "I could not generate an answer.")
     except Exception as e:
-        return f"Error communicating with the AI model: {e}"
+        print(f"Ollama API Error: {e}")
+        # Graceful fallback: return the raw retrieved context directly from Neo4j/PostgreSQL
+        return f"ℹ️ *(Note: AI reformatting timed out. Showing direct database search results below)*\n\n{context}"
 
 
 # =============================================================================
@@ -615,13 +617,28 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
             
             # Robust JSON extraction to handle markdown, control characters, and invalid JSON escaping
             import re
+            
+            def is_valid_question(q_text: str) -> bool:
+                if not q_text or len(q_text) < 20:
+                    return False
+                lower_text = q_text.lower()
+                junk_patterns = [
+                    r'^answer all', r'^part [a-z]', r'^section [a-z]',
+                    r'maximum marks', r'^time:', r'q\.p\. code',
+                    r'^\d+\s*x\s*\d+\s*=\s*\d+', r'^[a-z]\)'
+                ]
+                for pattern in junk_patterns:
+                    if re.search(pattern, lower_text):
+                        return False
+                return True
+
             match = re.search(r'\{.*\}', res_text, re.DOTALL)
             clean_text = match.group(0) if match else res_text
             
             try:
                 data = json.loads(clean_text)
                 if isinstance(data, dict) and "questions" in data:
-                    return data["questions"]
+                    return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
             except Exception:
                 pass
 
@@ -630,7 +647,7 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
                 sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_text)
                 data = json.loads(sanitized)
                 if isinstance(data, dict) and "questions" in data:
-                    return data["questions"]
+                    return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
             except Exception:
                 pass
 
@@ -638,14 +655,17 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
             extracted = []
             text_matches = re.findall(r'"text"\s*:\s*"([^"]+)"', clean_text)
             for q_t in text_matches:
-                if len(q_t) > 5:
+                if is_valid_question(q_t):
                     extracted.append({"question_number": "PYQ", "text": q_t, "likely_topic": "General", "implicit_formulas": []})
             if extracted:
                 return extracted
 
-            # Final fallback: return clean text instead of raw JSON string
+            # Final fallback: return clean text instead of raw JSON string, but only if it looks like a valid question
             clean_human_text = re.sub(r'[{}"\[\]]', '', clean_text).strip()
-            return [{"question_number": "PYQ", "text": clean_human_text, "likely_topic": "General", "implicit_formulas": []}]
+            if is_valid_question(clean_human_text):
+                return [{"question_number": "PYQ", "text": clean_human_text, "likely_topic": "General", "implicit_formulas": []}]
+            else:
+                return []
 
     except Exception as e:
         print(f"Failed to extract PYQ questions: {e}")
@@ -703,3 +723,288 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list, documen
                 })
                 MERGE (qm)-[:HAS_QUESTION]->(q)
             """, c_code=course_code, qm_name=qm_name, q_text=q_text, q_num=q_num, marks=marks, implicit_formulas=implicit_formulas, doc_id=str(document_id) if document_id else "", image_url=str(image_url) if image_url else "")
+
+
+import hashlib
+from sqlalchemy import text
+
+# =============================================================================
+# 4b. Neo4j Prerequisite Mapping
+# =============================================================================
+PREREQUISITE_MAP = {
+    "23CSE203": ["23MAT116"], # Data Structures requires Discrete Math
+    "23CSE211": ["23CSE203", "23MAT116"], # Algorithms requires DSA & Discrete Math
+    "23CSE301": ["23MAT117", "23MAT216"], # ML requires Linear Algebra & Probability
+    "23CSE314": ["23CSE303"], # Compiler Design requires Theory of Computation
+    "23CSE473": ["23CSE301"], # Deep Learning requires ML
+    "23CSE477": ["23CSE301"]  # Reinforcement Learning requires ML
+}
+
+def add_prerequisite_edges(neo4j_driver, prerequisite_map):
+    """
+    Executes parameterized Cypher to create REQUIRES edges between courses.
+    """
+    if not prerequisite_map:
+        return
+        
+    with neo4j_driver.session() as session:
+        for target_code, prereqs in prerequisite_map.items():
+            for prereq_code in prereqs:
+                session.run("""
+                    MERGE (c1:Course {code: $target_code})
+                    MERGE (c2:Course {code: $prereq_code})
+                    MERGE (c1)-[:REQUIRES]->(c2)
+                """, target_code=target_code, prereq_code=prereq_code)
+
+
+def extract_pyq_structured(file_path: str, course_code: str, document_id: str = "") -> list[dict]:
+    """
+    Extracts structured questions from PYQ PDFs using PyMuPDF text mode and Regex.
+    Handles CO, BTL tags and marks extraction.
+    Also crops individual images for each question if document_id is provided.
+    """
+    if not fitz:
+        print("Error: PyMuPDF is not installed. Cannot extract PYQ structured text.")
+        return []
+
+    structured_questions = []
+    
+    # Regex patterns
+    COURSE_CODE_RE = re.compile(r'\b([0-9]{2}[A-Z]{3}[0-9]{3})\b')
+    CO_TAG_RE      = re.compile(r'\[CO\s*0*(\d+)\]', re.IGNORECASE)
+    BTL_TAG_RE     = re.compile(r'\[BTL\s*(\d+)\]', re.IGNORECASE)
+    MARKS_RE       = re.compile(r'\((\d+)\s*[Mm]arks?\)', re.IGNORECASE)
+    FIG_RE         = re.compile(r'\bFig\.?\s*\d+\b', re.IGNORECASE)
+    Q_NUM_RE       = re.compile(r'^(\d+[a-zA-Z]?(?:\.\s*[A-Z])?)[.)]\s+', re.MULTILINE)
+    
+    try:
+        doc = fitz.open(file_path)
+        zoom_matrix = fitz.Matrix(2, 2)
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            page_text = page.get_text("text")
+            # Split the text based on question numbers
+            matches = list(Q_NUM_RE.finditer(page_text))
+            
+            # For image cropping, get the Y coordinates
+            y_coords = []
+            valid_matches = []
+            
+            for match in matches:
+                q_num_text = match.group(0).strip()
+                text_rects = page.search_for(q_num_text)
+                if text_rects:
+                    y_coords.append(text_rects[0].y0)
+                else:
+                    y_coords.append(0)
+                valid_matches.append(match)
+
+            pixmap = None
+            img = None
+            if document_id and valid_matches:
+                pixmap = page.get_pixmap(matrix=zoom_matrix)
+                # Convert PyMuPDF Pixmap to Pillow Image for easy cropping
+                img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+            
+            for i, match in enumerate(valid_matches):
+                q_num = match.group(1).strip()
+                start_idx = match.end()
+                end_idx = valid_matches[i+1].start() if i + 1 < len(valid_matches) else len(page_text)
+                
+                raw_q_text = page_text[start_idx:end_idx].strip()
+                
+                if len(raw_q_text) < 10:
+                    continue
+                    
+                # Extract tags
+                co_match = CO_TAG_RE.search(raw_q_text)
+                co_tag = f"CO{co_match.group(1)}" if co_match else None
+                
+                btl_match = BTL_TAG_RE.search(raw_q_text)
+                btl_tag = f"BTL{btl_match.group(1)}" if btl_match else None
+                
+                marks_match = MARKS_RE.search(raw_q_text)
+                marks = int(marks_match.group(1)) if marks_match else None
+                
+                has_figure = bool(FIG_RE.search(raw_q_text))
+                
+                # Clean question text
+                clean_q_text = CO_TAG_RE.sub('', raw_q_text)
+                clean_q_text = BTL_TAG_RE.sub('', clean_q_text)
+                clean_q_text = MARKS_RE.sub('', clean_q_text)
+                clean_q_text = clean_q_text.strip()
+                
+                # Basic junk filtering
+                if any(junk in clean_q_text.lower() for junk in ['answer all', 'part a', 'part b', 'maximum marks', 'time:']):
+                    continue
+                
+                exam_name = "PYQ Exam"
+                q_id_str = f"{course_code}_{q_num}_{exam_name}"
+                q_id = hashlib.md5(q_id_str.encode()).hexdigest()
+                
+                image_url = ""
+                # Crop image for this question
+                if img and pixmap:
+                    top = y_coords[i] * 2
+                    bottom = (y_coords[i+1] * 2) if i + 1 < len(y_coords) else pixmap.height
+                    
+                    if top == 0 and i > 0:
+                        top = (y_coords[i-1] * 2) + 50
+                    
+                    crop_top = max(0, int(top - 20))
+                    crop_bottom = int(bottom)
+                    
+                    if crop_bottom - crop_top > 30:
+                        chunk_img = img.crop((0, crop_top, pixmap.width, crop_bottom))
+                        image_filename = f"{document_id}_q{q_num.replace('.', '_')}.jpg"
+                        image_path = f"uploads/images/{image_filename}"
+                        os.makedirs("uploads/images", exist_ok=True)
+                        chunk_img.save(image_path, format='JPEG', quality=85)
+                        image_url = f"http://localhost:8000/static/images/{image_filename}"
+                
+                structured_questions.append({
+                    "id": q_id,
+                    "question_number": q_num,
+                    "question_text": clean_q_text,
+                    "co_tag": co_tag,
+                    "btl_tag": btl_tag,
+                    "marks": marks,
+                    "has_figure": has_figure,
+                    "course_code": course_code,
+                    "exam_name": exam_name,
+                    "image_url": image_url
+                })
+                
+        doc.close()
+    except Exception as e:
+        import traceback
+        print(f"Error in extract_pyq_structured: {e}")
+        traceback.print_exc()
+        
+    return structured_questions
+
+def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
+    if not structured_questions:
+        return
+        
+    with neo4j_driver.session() as session:
+        for q in structured_questions:
+            q_id = q["id"]
+            q_text = q["question_text"]
+            btl = q["btl_tag"]
+            marks = q["marks"]
+            has_fig = q["has_figure"]
+            co_tag = q["co_tag"]
+            c_code = q["course_code"]
+            image_url = q.get("image_url", "")
+            
+            # Map Question to Course
+            query = """
+                MERGE (q:Question {id: $q_id})
+                ON CREATE SET q.text = $q_text, q.btl = $btl, q.marks = $marks, q.has_figure = $has_fig, q.image_url = $image_url
+                MERGE (c:Course {code: $c_code})
+                MERGE (q)-[:BELONGS_TO]->(c)
+            """
+            session.run(query, q_id=q_id, q_text=q_text, btl=btl, marks=marks, has_fig=has_fig, c_code=c_code, image_url=image_url)
+            
+            # Map to CO if exists
+            if co_tag:
+                co_query = """
+                    MATCH (q:Question {id: $q_id})
+                    MATCH (c:Course {code: $c_code})
+                    MERGE (co:CourseOutcome {id: $co_id, course_code: $c_code})
+                    MERGE (q)-[:MAPPED_TO_CO]->(co)
+                    MERGE (co)-[:BELONGS_TO]->(c)
+                """
+                session.run(co_query, q_id=q_id, c_code=c_code, co_id=co_tag)
+
+def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
+    """Search for PYQ questions in Neo4j by keyword matching on question text."""
+    stop_words = {"get", "me", "a", "the", "all", "questions", "question", 
+                  "on", "about", "find", "show", "list", "give", "related"}
+    words = [w.strip(".,!?-'\"") for w in question.lower().split() 
+             if len(w) > 2 and w not in stop_words]
+
+    if not words:
+        return []
+
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
+            WHERE all(word IN $words WHERE toLower(q.text) CONTAINS word)
+            RETURN q.text AS q_text, q.btl AS btl, q.marks AS marks,
+                   q.image_url AS image_url, c.code AS course_code,
+                   q.question_number AS q_num
+            LIMIT 20
+        """, words=words).data()
+    return records
+
+
+# =============================================================================
+# 8. Hybrid Search & Query Classification
+# =============================================================================
+
+async def hybrid_search_rrf(db, query_text: str, query_embedding: list[float], k=5, rrf_k=60):
+    """
+    Performs Reciprocal Rank Fusion (RRF) using PostgreSQL pgvector (semantic) 
+    and tsvector (keyword) on the document_chunks table.
+    """
+    if not query_embedding:
+        return []
+        
+    # Convert embedding list to string format for pgvector
+    embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
+    
+    # We use a FULL OUTER JOIN to combine ranks and calculate RRF score
+    sql_query = text("""
+        WITH vector_ranked AS (
+            SELECT id, content, course_code,
+                   ROW_NUMBER() OVER (ORDER BY embedding <=> :embedding) AS rank
+            FROM document_chunks
+            WHERE embedding IS NOT NULL
+            LIMIT 50
+        ),
+        text_ranked AS (
+            SELECT id, content, course_code,
+                   ROW_NUMBER() OVER (ORDER BY ts_rank(tsv_content, query) DESC) AS rank
+            FROM document_chunks,
+                 plainto_tsquery('english', :query_text) query
+            WHERE tsv_content @@ query
+            LIMIT 50
+        ),
+        rrf AS (
+            SELECT
+                COALESCE(v.id, t.id) AS id,
+                COALESCE(v.content, t.content) AS content,
+                COALESCE(v.course_code, t.course_code) AS course_code,
+                (COALESCE(1.0/(:rrf_k + v.rank), 0.0) + COALESCE(1.0/(:rrf_k + t.rank), 0.0)) AS rrf_score
+            FROM vector_ranked v
+            FULL OUTER JOIN text_ranked t ON v.id = t.id
+        )
+        SELECT id, content, course_code, rrf_score
+        FROM rrf
+        ORDER BY rrf_score DESC
+        LIMIT :k
+    """)
+    
+    try:
+        result = await db.execute(sql_query, {
+            "embedding": embedding_str, 
+            "query_text": query_text, 
+            "rrf_k": rrf_k, 
+            "k": k
+        })
+        
+        chunks = []
+        for row in result:
+            chunks.append({
+                "id": row.id,
+                "content": row.content,
+                "course_code": row.course_code,
+                "rrf_score": row.rrf_score
+            })
+        return chunks
+    except Exception as e:
+        print(f"Hybrid search error: {e}")
+        return []

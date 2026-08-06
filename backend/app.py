@@ -21,7 +21,8 @@ from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
 from utils import (
     process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer,
-    extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text
+    extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text,
+    extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg, hybrid_search_rrf, execute_neo4j_pyq_search
 )
 
 from typing import List, Optional
@@ -42,7 +43,27 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         # Create all tables defined in our SQLAlchemy models
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Add generated column and GIN index for TSVector full text search
+        await conn.execute(text("""
+            ALTER TABLE document_chunks 
+            ADD COLUMN IF NOT EXISTS tsv_content TSVECTOR 
+            GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+        """))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON document_chunks USING GIN(tsv_content)
+        """))
+        
     print("Database startup complete: Tables verified.")
+    
+    # Seed Neo4j prerequisite graph
+    try:
+        neo4j_driver = get_neo4j()
+        add_prerequisite_edges(neo4j_driver, PREREQUISITE_MAP)
+        print("Neo4j Prerequisite Graph seeded.")
+    except Exception as e:
+        print(f"Failed to seed prereqs: {e}")
+        
     yield
 
 # Initialize the FastAPI application
@@ -67,6 +88,119 @@ app.mount("/static", StaticFiles(directory="uploads"), name="static")
 # Route: /chat — Handles Student Questions
 # =============================================================================
 
+import httpx
+from utils import OLLAMA_BASE_URL, OLLAMA_MODEL
+
+async def classify_query_intent(question: str) -> str:
+    """
+    Tiered classification: Fast keyword pre-filter first. 
+    If ambiguous, invoke the LLM classifier.
+    """
+    q_lower = question.lower()
+    
+    # Tier 1: Fast Keyword Routing
+    if any(k in q_lower for k in ["prerequisite", "before taking", "should i know", "requires", "needed for"]):
+        return "MULTI_HOP_PREREQ"
+    elif any(k in q_lower for k in ["btl", "co1", "co2", "co3", "co4", "co5", "bloom", "mapped to", "course outcome questions"]):
+        return "GRAPH_PYQ_MAPPING"
+    elif any(k in q_lower for k in ["syllabus", "topics", "units", "course outcomes", "objectives"]):
+        return "SIMPLE_CURRICULUM"
+    elif any(k in q_lower for k in ["questions on", "list questions", "pyq", "past year"]):
+        return "SIMPLE_PYQ"
+        
+    # Tier 2: LLM Fallback (Slow)
+    prompt = f"""
+You are a query classification engine for a university information system.
+Classify the user's question into exactly one primary category.
+
+Categories:
+- "SIMPLE_CURRICULUM": Questions about courses, syllabus content, units, topics, learning outcomes.
+- "SIMPLE_PYQ": Questions asking for past year questions on a topic.
+- "MULTI_HOP_PREREQ": Questions asking about course prerequisites or what to know before taking a course.
+- "GRAPH_PYQ_MAPPING": Questions asking for questions mapped to specific Course Outcomes (COs) or Bloom's Taxonomy Levels (BTLs).
+
+Return ONLY the category name. No explanations.
+Question: {question}
+"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+                timeout=10.0
+            )
+            ans = response.json().get("response", "").strip().upper()
+            if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING"]:
+                return ans
+    except Exception as e:
+        print(f"LLM classification error: {e}")
+        
+    return "SIMPLE_CURRICULUM" # Default fallback
+
+
+def execute_graph_prereq_query(neo4j_driver, question: str) -> list:
+    """Extracts course name/code from question and finds prereqs."""
+    # Rough extraction for demonstration (assumes course is in the query)
+    words = question.lower().split()
+    course_hint = next((w for w in words if len(w) > 3 and w not in ["what", "are", "the", "prerequisites", "for"]), "")
+    
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (target:Course)
+            WHERE toLower(target.name) CONTAINS toLower($course_name) 
+               OR toLower(target.code) CONTAINS toLower($course_name)
+            MATCH path = (target)-[:REQUIRES*1..5]->(prereq:Course)
+            RETURN target.name AS course, collect(DISTINCT prereq.name) AS all_prerequisites
+            LIMIT 10
+        """, course_name=course_hint).data()
+    return records
+
+
+def execute_graph_co_query(neo4j_driver, question: str) -> list:
+    """Extracts CO id and queries the graph."""
+    import re
+    co_match = re.search(r'co\d+', question.lower())
+    co_id = co_match.group(0).upper() if co_match else "CO1"
+    
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (q:Question)-[:MAPPED_TO_CO]->(co:CourseOutcome {id: $co_id})
+                  -[:BELONGS_TO]->(c:Course)
+            RETURN q.text AS question, q.btl AS btl, q.marks AS marks, q.has_figure AS has_figure, c.code AS course_code
+            LIMIT 20
+        """, co_id=co_id).data()
+    return records
+
+
+def execute_graph_syllabus_query(neo4j_driver, question: str) -> list:
+    """Queries Neo4j for course syllabus structure (Units & Topics)."""
+    words = [w.strip(".,!?-'\"") for w in question.lower().split() if len(w) > 2 and w not in ["get", "me", "the", "syllabus", "for", "course", "topics", "units", "what", "is"]]
+    if not words:
+        words = [question.lower()]
+        
+    with neo4j_driver.session() as session:
+        # First try matching course name or course code directly
+        records = session.run("""
+            MATCH (c:Course)
+            WHERE all(word IN $words WHERE toLower(c.name) CONTAINS word OR toLower(c.code) CONTAINS word)
+            OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+            RETURN c.code as course_code, c.name as course_name, u.title as unit_title, collect(DISTINCT t.name) as topics
+            ORDER BY size(c.name) ASC
+            LIMIT 15
+        """, words=words).data()
+        
+        # If no course name matches all words, fallback to topic-level search
+        if not records:
+            records = session.run("""
+                MATCH (c:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+                WHERE all(word IN $words WHERE toLower(t.name) CONTAINS word)
+                RETURN c.code as course_code, c.name as course_name, u.title as unit_title, collect(DISTINCT t.name) as topics
+                LIMIT 15
+            """, words=words).data()
+            
+    return records
+
+
 class ChatRequest(BaseModel):
     """Defines the expected JSON structure when a student asks a question."""
     message: str
@@ -74,147 +208,95 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
-    Takes a student's question, searches both PostgreSQL and Neo4j for relevant
-    context, and generates an AI response grounded in that context.
+    Takes a student's question, uses tiered intent routing, and searches 
+    PostgreSQL/Neo4j for relevant context before generating an answer.
     """
     question = request.message
     context_parts = []
-
-    # --- Step 1: Graph Search in Neo4j (Structured Knowledge First) ---
-    try:
-        neo4j_driver = get_neo4j()
-        # Extract keywords from the question, ignoring short stop words like "the", "for", "me"
-        raw_words = question.lower().split()
-        stop_words = {"get", "me", "the", "for", "and", "with", "this", "that", "course", "syllabus"}
-        words = [w for w in raw_words if len(w) > 3 and w not in stop_words]
-        
-        # If no meaningful words remain, fallback to raw words
-        if not words:
-            words = raw_words
-
-        with neo4j_driver.session() as session:
-            # Query 1: Find any courses or topics matching the question.
-            records = session.run(
-                """
-                MATCH (n)
-                WHERE (n:Course OR n:Topic OR n:SubTopic)
-                AND all(word IN $words WHERE toLower(n.name) CONTAINS word OR toLower(n.code) CONTAINS word)
+    
+    intent = await classify_query_intent(question)
+    print(f"[ROUTER] Intent classified as: {intent}")
+    
+    neo4j_driver = get_neo4j()
+    
+    if intent == "MULTI_HOP_PREREQ":
+        records = execute_graph_prereq_query(neo4j_driver, question)
+        if records:
+            context_parts.append("--- PREREQUISITE GRAPH KNOWLEDGE ---")
+            for r in records:
+                context_parts.append(f"Course: {r['course']} requires prerequisites: {', '.join(r['all_prerequisites'])}")
+    
+    elif intent == "GRAPH_PYQ_MAPPING":
+        records = execute_graph_co_query(neo4j_driver, question)
+        if records:
+            context_parts.append("--- MAPPED QUESTIONS GRAPH KNOWLEDGE ---")
+            for r in records:
+                context_parts.append(f"Course {r['course_code']} Question (BTL: {r['btl']}, Marks: {r['marks']}): {r['question']}")
                 
-                // If the matched node is a Topic/Subtopic, find its parent Course
-                OPTIONAL MATCH (c:Course)-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic)
-                WHERE n = t OR (t)-[:HAS_SUBTOPIC]->(n)
-                
-                // Identify the main course to pull the syllabus for
-                WITH coalesce(c, n) as target_course, n as matched_node
-                LIMIT 3
-                
-                // Now pull the full syllabus for the target_course
-                OPTIONAL MATCH (target_course:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-                
-                RETURN 
-                    target_course.code as course_code,
-                    target_course.name as course_name,
-                    labels(matched_node) as match_type,
-                    matched_node.name as matched_node_name,
-                    u.title as unit_title,
-                    t.name as topic_name
-                """,
-                words=words
-            )
-            
-            graph_facts = []
+    elif intent == "SIMPLE_CURRICULUM":
+        # Search Neo4j Graph for Syllabus Units & Topics
+        records = execute_graph_syllabus_query(neo4j_driver, question)
+        if records:
             syllabus_dict = {}
-            
             for r in records:
                 c_code = r['course_code']
-                if not c_code: continue
-                
-                if r['unit_title'] and r['topic_name']:
-                    if c_code not in syllabus_dict:
-                        syllabus_dict[c_code] = {"name": r['course_name'], "units": {}}
-                    if r['unit_title'] not in syllabus_dict[c_code]["units"]:
-                        syllabus_dict[c_code]["units"][r['unit_title']] = []
-                    
-                    # Avoid duplicates
-                    if r['topic_name'] not in syllabus_dict[c_code]["units"][r['unit_title']]:
-                        syllabus_dict[c_code]["units"][r['unit_title']].append(r['topic_name'])
-                else:
-                    m_type = r['match_type'][0] if r['match_type'] else "Unknown"
-                    graph_facts.append(f"[Course {c_code} - {m_type}] {r['matched_node_name']}")
-
+                if c_code not in syllabus_dict:
+                    syllabus_dict[c_code] = {"name": r['course_name'], "units": {}}
+                if r['unit_title'] and r['topics']:
+                    syllabus_dict[c_code]["units"][r['unit_title']] = r['topics']
+            
             for c_code, data in syllabus_dict.items():
                 fact = f"Course Syllabus for [{c_code}] {data['name']}:\n"
                 for unit, topics in data['units'].items():
                     fact += f"  - {unit}: " + ", ".join(topics) + "\n"
-                graph_facts.append(fact)
+                context_parts.append(fact)
 
-            # Query 2: Search PYQ Question & QuestionModel nodes in Neo4j (fetch across all uploaded documents)
-            pyq_records = session.run(
-                """
-                MATCH (c:Course)-[:HAS_QUESTION_MODEL]->(qm:QuestionModel)-[:HAS_QUESTION]->(q:Question)
-                WHERE any(word IN $words WHERE toLower(q.text) CONTAINS word OR toLower(qm.name) CONTAINS word OR (q.implicit_formulas IS NOT NULL AND any(f IN q.implicit_formulas WHERE toLower(f) CONTAINS word)))
-                RETURN c.code as course_code, qm.name as model_name, q.question_number as q_num, q.text as q_text, q.implicit_formulas as formulas, q.image_url as image_url
-                LIMIT 25
-                """,
-                words=words
-            )
-            for pr in pyq_records:
-                q_text = pr['q_text']
-                if q_text:
-                    q_fact = f"[PYQ - Course {pr['course_code']} - {pr['q_num']}] Question: {q_text}"
-                    if pr['formulas']:
-                        cleaned_f = [clean_formula_text(f) for f in pr['formulas'] if clean_formula_text(f)]
-                        if cleaned_f:
-                            q_fact += f" (Formulas: {', '.join(cleaned_f)})"
-                    if pr['image_url']:
-                        q_fact += f"\n![Diagram for {pr['q_num']}]({pr['image_url']})"
-                    graph_facts.append(q_fact)
+        # Also search PostgreSQL via RRF for extra prose chunks
+        question_embedding = await get_embedding(question)
+        if question_embedding:
+            try:
+                chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                if chunks:
+                    context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
+                    for chunk in chunks:
+                        content = chunk.get("content", "")
+                        if content:
+                            context_parts.append(content)
+            except Exception as e:
+                print(f"Hybrid search error in /chat: {e}")
 
-            if graph_facts:
-                context_parts.append("--- KNOWLEDGE GRAPH FACTS ---")
-                context_parts.extend(graph_facts)
-            else:
-                # Fallback: If no specific course matched, list all available courses
-                fallback_records = session.run("MATCH (c:Course) RETURN c.code as code, c.name as name")
-                all_courses = [f"[{r['code']}] {r['name']}" for r in fallback_records]
-                if all_courses:
-                    context_parts.append("--- AVAILABLE COURSES IN THE DATABASE ---")
-                    context_parts.append("\n".join(all_courses))
-    except Exception as e:
-        print(f"Neo4j graph search error: {e}")
+    else:
+        # SIMPLE_PYQ
+        neo4j_driver = get_neo4j()
+        neo4j_results = execute_neo4j_pyq_search(neo4j_driver, question)
+        
+        if neo4j_results:
+            context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
+            for record in neo4j_results:
+                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}\nImage: {record['image_url']}\nMarks: {record['marks']}\nBTL: {record['btl']}")
+        else:
+            question_embedding = await get_embedding(question)
+            if question_embedding:
+                try:
+                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=10)
+                    if chunks:
+                        context_parts.append("--- HYBRID SEARCH RESULTS (TEXT + SEMANTIC) ---")
+                        for chunk in chunks:
+                            content = chunk.get("content", "")
+                            if content:
+                                context_parts.append(content)
+                except Exception as e:
+                    print(f"Hybrid search error in /chat: {e}")
 
-    # --- Step 2: Vector Search in PostgreSQL ---
-    question_embedding = await get_embedding(question)
-
-    if question_embedding:
-        try:
-            query = select(DocumentChunk).order_by(
-                DocumentChunk.embedding.cosine_distance(question_embedding)
-            ).limit(10)
-            
-            result = await db.execute(query)
-            similar_chunks = result.scalars().all()
-
-            if similar_chunks:
-                context_parts.append("--- RELEVANT TEXT FROM DOCUMENTS ---")
-                for chunk in similar_chunks:
-                    context_parts.append(chunk.content)
-        except Exception as e:
-            print(f"Postgres vector search error: {e}")
-
-    # --- Step 3: Generate the Final AI Answer ---
+    # Generate final answer
     final_context = "\n".join(context_parts)
-    
-    # Truncate context to prevent LLM context-window overflow or timeouts
-    if len(final_context) > 3000:
-        final_context = final_context[:3000] + "\n...[Context Truncated for Length]..."
+    if len(final_context) > 8000:
+        final_context = final_context[:8000] + "\n...[Context Truncated]..."
         
     print("DEBUG FINAL CONTEXT:")
     print(final_context)
     
-    # Ask the AI model to answer the question using ONLY the provided context
     ai_response = await generate_answer(question, final_context)
-    
     return {"response": ai_response}
 
 
@@ -562,6 +644,34 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
     print(f"[PYQ] Starting processing for {course_code}...")
     neo4j_driver = get_neo4j()
 
+    # Stage 1: Structured Text Extractor (fast, CO/BTL-aware)
+    structured_qs = extract_pyq_structured(file_path, course_code, str(document_id))
+    
+    if structured_qs:
+        print(f"[PYQ] Text extractor found {len(structured_qs)} questions. Mapping to KG...")
+        map_pyq_structured_to_kg(neo4j_driver, structured_qs)
+        
+        async for db in get_db():
+            for q in structured_qs:
+                labeled_content = f"[PYQ - {course_code} - {q['question_number']}]\n{q['question_text']}"
+                embedding = await get_embedding(labeled_content)
+                if embedding:
+                    text_chunk = DocumentChunk(
+                        document_id=document_id,
+                        content=labeled_content,
+                        course_code=course_code,
+                        content_type="text",
+                        embedding=embedding
+                    )
+                    db.add(text_chunk)
+            await db.commit()
+            break
+        print(f"[PYQ] Finished processing structured text for {course_code}!")
+        return
+        
+    print(f"[PYQ] Text extractor found 0 questions. Falling back to Vision AI...")
+
+    # Stage 2: Vision pipeline
     # Render pages as chunked images
     page_chunks = process_pyq_visuals(file_path)
     print(f"[PYQ] Rendered {len(page_chunks)} image chunks.")
@@ -597,6 +707,12 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                         
                     q_text = q.get("text", "")
                     
+                    # Validate q_text before storing to prevent junk/JSON
+                    if len(q_text) < 20 or q_text.startswith('{') or '{"' in q_text:
+                        continue
+                    if any(junk in q_text[:50].lower() for junk in ['answer all', 'part a', 'part b', 'co |', 'course outcomes']):
+                        continue
+                        
                     # Append the markdown image link so the LLM includes it in the chat
                     markdown_image = f"![PYQ Page - {course_code}](http://localhost:8000/static/{image_filename})"
                     
