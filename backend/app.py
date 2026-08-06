@@ -5,6 +5,7 @@ import shutil
 
 # FastAPI is the core framework used to build our web API
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 # CORSMiddleware allows our frontend (HTML files) to communicate with this backend
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
 from utils import (
     process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
-    get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer,
+    get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer, generate_answer_stream,
     extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text,
     extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg, hybrid_search_rrf, execute_neo4j_pyq_search
 )
@@ -205,13 +206,46 @@ class ChatRequest(BaseModel):
     """Defines the expected JSON structure when a student asks a question."""
     message: str
 
+import asyncio
+from functools import lru_cache
+import time
+
+# Simple in-memory cache for recent chat responses
+_chat_cache = {}
+_CACHE_TTL = 300  # 5 minutes
+
+def _get_cached_response(key):
+    if key in _chat_cache:
+        val, ts = _chat_cache[key]
+        if time.time() - ts < _CACHE_TTL:
+            return val
+        del _chat_cache[key]
+    return None
+
+def _set_cache(key, val):
+    _chat_cache[key] = (val, time.time())
+    # Evict old entries if cache grows too large
+    if len(_chat_cache) > 100:
+        oldest = min(_chat_cache, key=lambda k: _chat_cache[k][1])
+        del _chat_cache[oldest]
+
+
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
-    Takes a student's question, uses tiered intent routing, and searches 
-    PostgreSQL/Neo4j for relevant context before generating an answer.
+    Takes a student's question, uses tiered intent routing, searches 
+    PostgreSQL/Neo4j for relevant context, and streams the AI response back.
     """
     question = request.message
+    cache_key = question.strip().lower()
+
+    # --- Check cache first ---
+    cached = _get_cached_response(cache_key)
+    if cached:
+        async def yield_cached():
+            yield cached
+        return StreamingResponse(yield_cached(), media_type="text/plain")
+
     context_parts = []
     
     intent = await classify_query_intent(question)
@@ -296,8 +330,65 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     print("DEBUG FINAL CONTEXT:")
     print(final_context)
     
-    ai_response = await generate_answer(question, final_context)
-    return {"response": ai_response}
+    # Stream response and cache it
+    async def stream_and_cache():
+        full_response = []
+        async for chunk in generate_answer_stream(question, final_context):
+            full_response.append(chunk)
+            yield chunk
+        _set_cache(cache_key, "".join(full_response))
+
+    return StreamingResponse(stream_and_cache(), media_type="text/plain")
+
+
+# =============================================================================
+# Route: /debug-context — Returns the exact context built for a question
+# =============================================================================
+
+@app.post("/debug-context")
+async def debug_context_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+    """Debug endpoint: Returns the raw context that would be sent to the LLM."""
+    question = request.message
+    context_parts = []
+    debug_info = {}
+
+    try:
+        neo4j_driver = get_neo4j()
+        raw_words = question.lower().split()
+        stop_words = {
+            "get", "give", "show", "list", "tell", "what", "about", "from", "have",
+            "me", "the", "for", "and", "with", "this", "that", "course", "syllabus",
+            "please", "can", "could", "would", "want", "need", "find", "look"
+        }
+        words = [w for w in raw_words if len(w) > 3 and w not in stop_words]
+        if not words:
+            words = [w for w in raw_words if len(w) > 2]
+
+        debug_info["extracted_words"] = words
+        phrase = " ".join(words)
+        debug_info["phrase"] = phrase
+
+        with neo4j_driver.session() as session:
+            course_records = list(session.run(
+                """
+                MATCH (c:Course)
+                WHERE toLower(c.name) CONTAINS $phrase
+                   OR any(word IN $words WHERE toLower(c.code) CONTAINS word)
+                WITH c LIMIT 3
+                OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+                RETURN c.code as course_code, c.name as course_name, u.title as unit_title, t.name as topic_name
+                ORDER BY course_code, unit_title, topic_name
+                """,
+                words=words,
+                phrase=phrase
+            ))
+            debug_info["course_records_count"] = len(course_records)
+            debug_info["sample_course_records"] = [dict(r) for r in course_records[:5]]
+
+    except Exception as e:
+        debug_info["error"] = str(e)
+
+    return debug_info
 
 
 # =============================================================================

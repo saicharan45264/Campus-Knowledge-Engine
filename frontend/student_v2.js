@@ -25,6 +25,8 @@ function appendMessage(sender, text, imageUrl) {
     senderName.className = 'sender-name';
     senderName.textContent = sender === 'user' ? 'You' : 'CurriculumLens';
 
+    let contentDiv = null;
+
     // If an image was provided (for user image uploads), show a thumbnail
     if (imageUrl) {
         const img = document.createElement('img');
@@ -40,6 +42,7 @@ function appendMessage(sender, text, imageUrl) {
             caption.className = 'document-body';
             caption.textContent = text;
             msgDiv.appendChild(caption);
+            contentDiv = caption;
         }
     } else {
         // Standard text-only message
@@ -55,13 +58,18 @@ function appendMessage(sender, text, imageUrl) {
 
         msgDiv.appendChild(senderName);
         msgDiv.appendChild(contentBody);
+        contentDiv = contentBody;
     }
 
     chatBox.appendChild(msgDiv);
     
     // Automatically scroll the chat box to the very bottom so the newest message is visible
     chatBox.scrollTop = chatBox.scrollHeight;
+
+    // Return the content element so callers can update it later (e.g., streaming)
+    return contentDiv;
 }
+
 
 
 // ==========================================
@@ -94,19 +102,42 @@ chatForm.addEventListener('submit', async (e) => {
             body: JSON.stringify({ message: message })
         });
 
-        // Parse the JSON response returned by the server
-        const data = await response.json();
-
         // Remove the "thinking" message
         chatBox.removeChild(chatBox.lastChild);
         
-        // Step 3: Handle the server's response
+        // Step 3: Handle the server's streaming response
         if (response.ok) {
-            // Display the AI's generated answer
-            appendMessage('ai', data.response);
+            // Setup an empty message bubble for the AI — appendMessage now returns the content div directly
+            const targetDiv = appendMessage('ai', '');
+            
+            let fullText = '';
+            
+            // Prepare to read the stream chunk by chunk
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            
+            while(true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                // Decode the chunk of data from the stream
+                const chunk = decoder.decode(value, { stream: true });
+                fullText += chunk;
+                
+                // Update the chat bubble in real-time using the direct element reference
+                if (typeof marked !== 'undefined') {
+                    targetDiv.innerHTML = marked.parse(fullText);
+                } else {
+                    targetDiv.textContent = fullText;
+                }
+                
+                // Keep the chat scrolled to the bottom
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
         } else {
             // Throw an error if the server returned a bad status code
-            throw new Error(data.detail || 'Chat request failed');
+            const errorText = await response.text();
+            throw new Error(errorText || 'Chat request failed');
         }
     } catch (error) {
         // Remove the "thinking" message if it exists

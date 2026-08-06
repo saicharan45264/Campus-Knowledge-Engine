@@ -435,6 +435,47 @@ Answer:
         # Graceful fallback: return the raw retrieved context directly from Neo4j/PostgreSQL
         return f"ℹ️ *(Note: AI reformatting timed out. Showing direct database search results below)*\n\n{context}"
 
+async def generate_answer_stream(question: str, context: str):
+    """
+    Streams the AI response chunk by chunk as it generates.
+    """
+    prompt = f"""
+You are CurriculumLens, an academic AI assistant for university students.
+Answer the student's question using ONLY the information provided in the Context below.
+If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
+
+IMPORTANT: If the Context contains Markdown image links for diagrams (e.g. `![Diagram for ...](http://...)`), you MUST include EVERY Markdown image link directly under its corresponding question in your final answer so the student can see the circuit/diagram images.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:
+"""
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model":  OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": True,
+                    "options": {
+                        "num_ctx": 8192
+                    }
+                },
+                timeout=300.0
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line:
+                        data = json.loads(line)
+                        yield data.get("response", "")
+    except Exception as e:
+        yield f"Error communicating with the AI model: {e}"
+
 
 # =============================================================================
 # 6. Syllabus Structural Extraction (New Architecture)
