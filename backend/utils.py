@@ -902,7 +902,7 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
             # Map Question to Course
             query = """
                 MERGE (q:Question {id: $q_id})
-                ON CREATE SET q.text = $q_text, q.btl = $btl, q.marks = $marks, q.has_figure = $has_fig, q.image_url = $image_url
+                SET q.text = $q_text, q.btl = $btl, q.marks = $marks, q.has_figure = $has_fig, q.image_url = $image_url
                 MERGE (c:Course {code: $c_code})
                 MERGE (q)-[:BELONGS_TO]->(c)
             """
@@ -922,7 +922,8 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
 def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     """Search for PYQ questions in Neo4j by keyword matching on question text."""
     stop_words = {"get", "me", "a", "the", "all", "questions", "question", 
-                  "on", "about", "find", "show", "list", "give", "related"}
+                  "on", "about", "find", "show", "list", "give", "related",
+                  "problem", "problems", "solve"}
     words = [w.strip(".,!?-'\"") for w in question.lower().split() 
              if len(w) > 2 and w not in stop_words]
 
@@ -932,11 +933,13 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     with neo4j_driver.session() as session:
         records = session.run("""
             MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-            WHERE all(word IN $words WHERE toLower(q.text) CONTAINS word)
+            WITH q, c, [word IN $words WHERE toLower(q.text) CONTAINS word | 1] AS matches
+            WHERE size(matches) > 0
             RETURN q.text AS q_text, q.btl AS btl, q.marks AS marks,
                    q.image_url AS image_url, c.code AS course_code,
-                   q.question_number AS q_num
-            LIMIT 20
+                   q.question_number AS q_num, size(matches) as score
+            ORDER BY score DESC
+            LIMIT 5
         """, words=words).data()
     return records
 
@@ -945,10 +948,11 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
 # 8. Hybrid Search & Query Classification
 # =============================================================================
 
-async def hybrid_search_rrf(db, query_text: str, query_embedding: list[float], k=5, rrf_k=60):
+async def hybrid_search_rrf(db, query_text: str, query_embedding: list[float], k=5, rrf_k=60, exclude_content_type: str = None):
     """
     Performs Reciprocal Rank Fusion (RRF) using PostgreSQL pgvector (semantic) 
     and tsvector (keyword) on the document_chunks table.
+    exclude_content_type: if set (e.g. 'image'), chunks with that content_type are excluded.
     """
     if not query_embedding:
         return []
@@ -956,13 +960,18 @@ async def hybrid_search_rrf(db, query_text: str, query_embedding: list[float], k
     # Convert embedding list to string format for pgvector
     embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
     
+    # Build optional WHERE clause suffix for content_type exclusion
+    ct_filter = ""
+    if exclude_content_type:
+        ct_filter = f"AND content_type != '{exclude_content_type}'"
+    
     # We use a FULL OUTER JOIN to combine ranks and calculate RRF score
-    sql_query = text("""
+    sql_query = text(f"""
         WITH vector_ranked AS (
             SELECT id, content, course_code,
                    ROW_NUMBER() OVER (ORDER BY embedding <=> :embedding) AS rank
             FROM document_chunks
-            WHERE embedding IS NOT NULL
+            WHERE embedding IS NOT NULL {ct_filter}
             LIMIT 50
         ),
         text_ranked AS (
@@ -970,7 +979,7 @@ async def hybrid_search_rrf(db, query_text: str, query_embedding: list[float], k
                    ROW_NUMBER() OVER (ORDER BY ts_rank(tsv_content, query) DESC) AS rank
             FROM document_chunks,
                  plainto_tsquery('english', :query_text) query
-            WHERE tsv_content @@ query
+            WHERE tsv_content @@ query {ct_filter}
             LIMIT 50
         ),
         rrf AS (

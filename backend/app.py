@@ -105,7 +105,15 @@ async def classify_query_intent(question: str) -> str:
         return "GRAPH_PYQ_MAPPING"
     elif any(k in q_lower for k in ["syllabus", "topics", "units", "course outcomes", "objectives"]):
         return "SIMPLE_CURRICULUM"
-    elif any(k in q_lower for k in ["questions on", "list questions", "pyq", "past year"]):
+    elif any(k in q_lower for k in [
+        "questions on", "list questions", "pyq", "past year",
+        "problem on", "question on", "give me a question", "get me a question",
+        "get me the problem", "find a question", "show a question",
+        "use the", "using mesh", "using nodal", "using kvl", "using kcl",
+        "current division", "voltage division", "superposition", "thevenin", "norton",
+        "derive the", "calculate the", "determine the", "find the current",
+        "find the voltage", "draw and explain", "illustrate"
+    ]):
         return "SIMPLE_PYQ"
         
     # Tier 2: LLM Fallback (Slow)
@@ -251,16 +259,17 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                     fact += f"  - {unit}: " + ", ".join(topics) + "\n"
                 context_parts.append(fact)
 
-        # Also search PostgreSQL via RRF for extra prose chunks
+        # Also search PostgreSQL via RRF for extra prose chunks (exclude PYQ visual chunks)
         question_embedding = await get_embedding(question)
         if question_embedding:
             try:
-                chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                chunks = await hybrid_search_rrf(db, question, question_embedding, k=5, exclude_content_type="visual")
                 if chunks:
                     context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
                     for chunk in chunks:
                         content = chunk.get("content", "")
-                        if content:
+                        # Skip any PYQ-labelled content in curriculum answers
+                        if content and not content.startswith("[PYQ"):
                             context_parts.append(content)
             except Exception as e:
                 print(f"Hybrid search error in /chat: {e}")
@@ -271,9 +280,16 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         neo4j_results = execute_neo4j_pyq_search(neo4j_driver, question)
         
         if neo4j_results:
-            context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
-            for record in neo4j_results:
-                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}\nImage: {record['image_url']}\nMarks: {record['marks']}\nBTL: {record['btl']}")
+            context_parts.append("### Matched Exam Questions:\n")
+            for i, record in enumerate(neo4j_results, 1):
+                img_md = f"\n![Question Diagram]({record['image_url']})" if record.get('image_url') and record['image_url'] != "None" else ""
+                btl_str = f" | BTL: {record['btl']}" if record.get('btl') else ""
+                marks_str = f" | Marks: {record['marks']}" if record.get('marks') else ""
+                context_parts.append(
+                    f"**{i}. Question ({record['course_code']}{btl_str}{marks_str}):**\n"
+                    f"{record['q_text']}\n"
+                    f"{img_md}\n"
+                )
         else:
             question_embedding = await get_embedding(question)
             if question_embedding:
