@@ -352,11 +352,13 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             full_response.append(chunk)
             yield chunk
             
-        # Append images at the end to guarantee they render, since the LLM often drops them
+        # Only append images that the LLM dropped from its response
         import re
-        images = re.findall(r'!\[.*?\]\(.*?\)', final_context)
-        if images:
-            image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(images)
+        ai_text = "".join(full_response)
+        all_context_images = re.findall(r'!\[.*?\]\(.*?\)', final_context)
+        missed_images = [img for img in all_context_images if re.search(r'\((.+?)\)', img).group(1) not in ai_text]
+        if missed_images:
+            image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(missed_images)
             full_response.append(image_block)
             yield image_block
             
