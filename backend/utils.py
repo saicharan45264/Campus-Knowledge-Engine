@@ -994,23 +994,40 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     if not words:
         return []
 
-    cypher = """
+    cypher_all = """
         MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-        WHERE all(word IN $words WHERE replace(toLower(q.text), "'", "") CONTAINS word)
+        WHERE all(word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', ''))
         RETURN DISTINCT q.text AS q_text, q.btl AS btl, q.marks AS marks,
                q.image_url AS image_url, c.code AS course_code,
                q.question_number AS q_num
         LIMIT 20
     """
     
+    cypher_any = """
+        MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
+        WHERE any(word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', ''))
+        WITH q, c, size([word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', '') | word]) AS match_count
+        RETURN DISTINCT q.text AS q_text, q.btl AS btl, q.marks AS marks,
+               q.image_url AS image_url, c.code AS course_code,
+               q.question_number AS q_num, match_count
+        ORDER BY match_count DESC
+        LIMIT 20
+    """
+    
     with neo4j_driver.session() as session:
-        records = session.run(cypher, words=words).data()
+        # Try strict all-keyword match first
+        records = session.run(cypher_all, words=words).data()
         
-        # If strict all-word match fails, try with just the single longest keyword
-        # This handles typos (e.g., "theorm" won't match, but "superposition" will)
-        if not records and len(words) > 1:
+        # If strict fails or returns few results, use the longest keyword with any-match
+        if len(records) < 2:
             longest_word = max(words, key=len)
-            records = session.run(cypher, words=[longest_word]).data()
+            extra = session.run(cypher_any, words=[longest_word]).data()
+            # Merge, keeping strict results first
+            seen = {r['q_text'][:80] for r in records}
+            for r in extra:
+                if r['q_text'][:80] not in seen:
+                    seen.add(r['q_text'][:80])
+                    records.append(r)
     
     return records
 
