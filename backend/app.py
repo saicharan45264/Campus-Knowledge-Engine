@@ -301,6 +301,13 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
 
     else:
         # SIMPLE_PYQ
+        import re as _re
+        def _dedup_key(text: str) -> str:
+            """Strip [PYQ - ...] / [Course: ...] prefix and normalize whitespace for deduplication."""
+            text = text.strip()
+            text = _re.sub(r'^\[(?:PYQ|Course)[^\]]+\]\s*', '', text)
+            return ' '.join(text.split())[:120]
+
         seen_texts = set()  # Track seen question texts to avoid duplicates
         neo4j_driver = get_neo4j()
         neo4j_results = execute_neo4j_pyq_search(neo4j_driver, question)
@@ -309,11 +316,10 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
             for record in neo4j_results:
                 q_text = record.get('q_text', '')
-                # Skip duplicates based on the first 80 chars of text
-                dedup_key = q_text.strip()[:80]
-                if dedup_key in seen_texts:
+                key = _dedup_key(q_text)
+                if key in seen_texts:
                     continue
-                seen_texts.add(dedup_key)
+                seen_texts.add(key)
                 img_url = record['image_url'].replace(' ', '%20') if record.get('image_url') else None
                 img_markdown = f"\n![Diagram for Q{record['q_num']}]({img_url})" if img_url and img_url != "None" else ""
                 context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{q_text}{img_markdown}\nMarks: {record['marks']}\nBTL: {record['btl']}")
@@ -327,9 +333,9 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                     extra_parts = []
                     for chunk in chunks:
                         content = chunk.get("content", "")
-                        dedup_key = content.strip()[:80]
-                        if content and dedup_key not in seen_texts:
-                            seen_texts.add(dedup_key)
+                        key = _dedup_key(content)
+                        if content and key not in seen_texts:
+                            seen_texts.add(key)
                             extra_parts.append(content)
                     if extra_parts:
                         context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
