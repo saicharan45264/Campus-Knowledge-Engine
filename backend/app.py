@@ -353,7 +353,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             kws = [w.strip(".,!?-'\"") for w in question.lower().split() 
                    if len(w) > 3 and w not in stop_words_pg]
             if kws:
-                pg_query = " | ".join(kws)  # OR search across all keywords
+                pg_query = " & ".join(kws)  # AND search across all keywords to prevent false positives
                 from sqlalchemy import text as sql_text
                 pg_result = await db.execute(sql_text("""
                     SELECT content FROM document_chunks
