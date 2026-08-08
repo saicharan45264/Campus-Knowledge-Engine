@@ -342,6 +342,37 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                         context_parts.extend(extra_parts)
             except Exception as e:
                 print(f"Hybrid search error in /chat: {e}")
+        
+        # ALWAYS run PostgreSQL full-text search as a guaranteed fallback
+        # This works even when the embedding model is unavailable (GPU busy)
+        try:
+            stop_words_pg = {'get', 'me', 'a', 'the', 'all', 'questions', 'question',
+                             'on', 'about', 'give', 'find', 'show', 'list', 'what', 'how'}
+            kws = [w.strip(".,!?-'\"") for w in question.lower().split() 
+                   if len(w) > 3 and w not in stop_words_pg]
+            if kws:
+                pg_query = " | ".join(kws)  # OR search across all keywords
+                from sqlalchemy import text as sql_text
+                pg_result = await db.execute(sql_text("""
+                    SELECT content FROM document_chunks
+                    WHERE tsv_content @@ to_tsquery('english', :q)
+                    ORDER BY ts_rank(tsv_content, to_tsquery('english', :q)) DESC
+                    LIMIT 10
+                """), {"q": pg_query})
+                pg_rows = pg_result.fetchall()
+                pg_extra = []
+                for row in pg_rows:
+                    content = row[0] or ""
+                    key = _dedup_key(content)
+                    if content and key not in seen_texts:
+                        seen_texts.add(key)
+                        pg_extra.append(content)
+                if pg_extra:
+                    if "--- ADDITIONAL TEXT CHUNKS ---" not in context_parts:
+                        context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
+                    context_parts.extend(pg_extra)
+        except Exception as e:
+            print(f"PostgreSQL text search error: {e}")
 
     # Generate final answer
     final_context = "\n".join(context_parts)
