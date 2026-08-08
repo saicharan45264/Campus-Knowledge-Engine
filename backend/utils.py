@@ -480,12 +480,16 @@ Answer:
                             data = json.loads(line)
                             yield data.get("response", "")
                     return  # Successful, stop retrying
+        
+        # If we exhausted 3 attempts due to 404s without returning
+        yield f"\n\nℹ️ *(Note: AI generation timed out. Showing direct database search results below)*\n\n{context}"
+        
         except Exception as e:
             if attempt < 2:
                 print(f"[generate] Error on attempt {attempt+1}: {type(e).__name__}: {e}, retrying...")
                 await asyncio.sleep(5)
             else:
-                yield f"Error communicating with the AI model: {type(e).__name__}: {e}"
+                yield f"\n\nℹ️ *(Note: Error communicating with AI: {e}. Showing direct database search results below)*\n\n{context}"
 
 
 

@@ -379,6 +379,8 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 pg_extra = []
                 for row in pg_rows:
                     content = row[0] or ""
+                    # Strip CO/BTL tables from Postgres chunks to improve deduplication and save context space
+                    content = _re.split(r'(?:Course Outcome|CO\s*\n|\*{3,})', content)[0].strip()
                     key = _dedup_key(content)
                     if content and key not in seen_texts:
                         seen_texts.add(key)
