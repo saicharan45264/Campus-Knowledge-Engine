@@ -411,7 +411,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         import re
         ai_text = "".join(full_response)
         all_context_images = re.findall(r'!\[.*?\]\(.*?\)', final_context)
-        missed_images = [img for img in all_context_images if re.search(r'\((.+?)\)', img).group(1) not in ai_text]
+        missed_images = [img for img in all_context_images if img not in ai_text]
         if missed_images:
             image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(missed_images)
             full_response.append(image_block)
