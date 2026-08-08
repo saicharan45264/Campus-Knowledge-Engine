@@ -314,7 +314,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             question_embedding = await get_embedding(question)
             if question_embedding:
                 try:
-                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=10)
+                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
                     if chunks:
                         context_parts.append("--- HYBRID SEARCH RESULTS (TEXT + SEMANTIC) ---")
                         for chunk in chunks:
@@ -338,6 +338,15 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         async for chunk in generate_answer_stream(question, final_context):
             full_response.append(chunk)
             yield chunk
+            
+        # Append images at the end to guarantee they render, since the LLM often drops them
+        import re
+        images = re.findall(r'!\[.*?\]\(.*?\)', final_context)
+        if images:
+            image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(images)
+            full_response.append(image_block)
+            yield image_block
+            
         _set_cache(cache_key, "".join(full_response))
 
     return StreamingResponse(stream_and_cache(), media_type="text/plain")
