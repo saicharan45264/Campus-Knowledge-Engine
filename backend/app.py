@@ -355,8 +355,8 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             if kws:
                 from sqlalchemy import text as sql_text
                 
-                # First try strict AND search
-                pg_query_and = " & ".join(kws)
+                # First try strict AND search with prefix matching for plural tolerance (e.g. analysis/analyses)
+                pg_query_and = " & ".join([f"{w}:*" for w in kws])
                 pg_result = await db.execute(sql_text("""
                     SELECT content FROM document_chunks
                     WHERE tsv_content @@ to_tsquery('english', :q)
