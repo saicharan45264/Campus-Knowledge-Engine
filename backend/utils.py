@@ -453,28 +453,39 @@ Question: {question}
 
 Answer:
 """
-    try:
-        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
-            async with client.stream(
-                "POST",
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model":  OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": True,
-                    "options": {
-                        "num_ctx": 8192
-                    }
-                },
-                timeout=300.0
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        yield data.get("response", "")
-    except Exception as e:
-        yield f"Error communicating with the AI model: {type(e).__name__}: {e}"
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
+                async with client.stream(
+                    "POST",
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model":  OLLAMA_MODEL,
+                        "prompt": prompt,
+                        "stream": True,
+                        "options": {
+                            "num_ctx": 8192
+                        }
+                    },
+                    timeout=300.0
+                ) as response:
+                    if response.status_code == 404:
+                        # Model may be swapping - wait and retry
+                        print(f"[generate] Got 404 on attempt {attempt+1}, retrying in 5s...")
+                        await asyncio.sleep(5)
+                        continue
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line:
+                            data = json.loads(line)
+                            yield data.get("response", "")
+                    return  # Successful, stop retrying
+        except Exception as e:
+            if attempt < 2:
+                print(f"[generate] Error on attempt {attempt+1}: {type(e).__name__}: {e}, retrying...")
+                await asyncio.sleep(5)
+            else:
+                yield f"Error communicating with the AI model: {type(e).__name__}: {e}"
 
 
 
