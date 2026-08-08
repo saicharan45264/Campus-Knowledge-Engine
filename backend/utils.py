@@ -996,7 +996,7 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
 
     cypher_all = """
         MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-        WHERE all(word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', ''))
+        WHERE all(word IN $words WHERE replace(replace(replace(toLower(q.text), ' ', ''), "'", ''), '’', '') CONTAINS replace(word, ' ', ''))
         RETURN DISTINCT q.text AS q_text, q.btl AS btl, q.marks AS marks,
                q.image_url AS image_url, c.code AS course_code,
                q.question_number AS q_num
@@ -1005,8 +1005,8 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     
     cypher_any = """
         MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-        WHERE any(word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', ''))
-        WITH q, c, size([word IN $words WHERE replace(replace(toLower(q.text), ' ', ''), "'", '') CONTAINS replace(word, ' ', '') | word]) AS match_count
+        WHERE any(word IN $words WHERE replace(replace(replace(toLower(q.text), ' ', ''), "'", ''), '’', '') CONTAINS replace(word, ' ', ''))
+        WITH q, c, size([word IN $words WHERE replace(replace(replace(toLower(q.text), ' ', ''), "'", ''), '’', '') CONTAINS replace(word, ' ', '') | word]) AS match_count
         RETURN DISTINCT q.text AS q_text, q.btl AS btl, q.marks AS marks,
                q.image_url AS image_url, c.code AS course_code,
                q.question_number AS q_num, match_count
