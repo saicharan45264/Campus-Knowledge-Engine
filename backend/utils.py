@@ -962,7 +962,12 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
                 session.run(co_query, q_id=q_id, c_code=c_code, co_id=co_tag)
 
 def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
-    """Search for PYQ questions in Neo4j by keyword matching on question text."""
+    """Search for PYQ questions in Neo4j by keyword matching on question text.
+    
+    Strategy:
+    1. Require ALL extracted keywords to match (strict mode) - prevents false positives
+    2. If zero results, retry with only the longest keyword (handles single-topic queries)
+    """
     stop_words = {
         "get", "me", "a", "the", "all", "questions", "question", 
         "on", "about", "find", "show", "list", "give", "related",
@@ -978,15 +983,24 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     if not words:
         return []
 
+    cypher = """
+        MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
+        WHERE all(word IN $words WHERE replace(toLower(q.text), "'", "") CONTAINS word)
+        RETURN DISTINCT q.text AS q_text, q.btl AS btl, q.marks AS marks,
+               q.image_url AS image_url, c.code AS course_code,
+               q.question_number AS q_num
+        LIMIT 20
+    """
+    
     with neo4j_driver.session() as session:
-        records = session.run("""
-            MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
-            WHERE all(word IN $words WHERE replace(toLower(q.text), "'", "") CONTAINS word)
-            RETURN q.text AS q_text, q.btl AS btl, q.marks AS marks,
-                   q.image_url AS image_url, c.code AS course_code,
-                   q.question_number AS q_num
-            LIMIT 20
-        """, words=words).data()
+        records = session.run(cypher, words=words).data()
+        
+        # If strict all-word match fails, try with just the single longest keyword
+        # This handles typos (e.g., "theorm" won't match, but "superposition" will)
+        if not records and len(words) > 1:
+            longest_word = max(words, key=len)
+            records = session.run(cypher, words=[longest_word]).data()
+    
     return records
 
 

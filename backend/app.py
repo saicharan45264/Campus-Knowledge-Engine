@@ -106,7 +106,7 @@ async def classify_query_intent(question: str) -> str:
         return "GRAPH_PYQ_MAPPING"
     elif any(k in q_lower for k in ["syllabus", "topics", "units", "course outcomes", "objectives"]):
         return "SIMPLE_CURRICULUM"
-    elif any(k in q_lower for k in ["questions on", "list questions", "pyq", "past year"]):
+    elif any(k in q_lower for k in ["question", "list questions", "pyq", "past year"]):
         return "SIMPLE_PYQ"
         
     # Tier 2: LLM Fallback (Slow)
@@ -128,7 +128,7 @@ Question: {question}
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-                timeout=10.0
+                timeout=30.0
             )
             ans = response.json().get("response", "").strip().upper()
             if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING"]:
@@ -136,7 +136,7 @@ Question: {question}
     except Exception as e:
         print(f"LLM classification error: {type(e).__name__}: {e}")
         
-    return "SIMPLE_CURRICULUM" # Default fallback
+    return "SIMPLE_PYQ" # Default fallback for general questions
 
 
 def execute_graph_prereq_query(neo4j_driver, question: str) -> list:
@@ -301,28 +301,41 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
 
     else:
         # SIMPLE_PYQ
+        seen_texts = set()  # Track seen question texts to avoid duplicates
         neo4j_driver = get_neo4j()
         neo4j_results = execute_neo4j_pyq_search(neo4j_driver, question)
         
         if neo4j_results:
             context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
             for record in neo4j_results:
+                q_text = record.get('q_text', '')
+                # Skip duplicates based on the first 80 chars of text
+                dedup_key = q_text.strip()[:80]
+                if dedup_key in seen_texts:
+                    continue
+                seen_texts.add(dedup_key)
                 img_url = record['image_url'].replace(' ', '%20') if record.get('image_url') else None
                 img_markdown = f"\n![Diagram for Q{record['q_num']}]({img_url})" if img_url and img_url != "None" else ""
-                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}{img_markdown}\nMarks: {record['marks']}\nBTL: {record['btl']}")
-        else:
-            question_embedding = await get_embedding(question)
-            if question_embedding:
-                try:
-                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
-                    if chunks:
-                        context_parts.append("--- HYBRID SEARCH RESULTS (TEXT + SEMANTIC) ---")
-                        for chunk in chunks:
-                            content = chunk.get("content", "")
-                            if content:
-                                context_parts.append(content)
-                except Exception as e:
-                    print(f"Hybrid search error in /chat: {e}")
+                context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{q_text}{img_markdown}\nMarks: {record['marks']}\nBTL: {record['btl']}")
+        
+        # Always supplement with hybrid search to catch anything Neo4j missed
+        question_embedding = await get_embedding(question)
+        if question_embedding:
+            try:
+                chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                if chunks:
+                    extra_parts = []
+                    for chunk in chunks:
+                        content = chunk.get("content", "")
+                        dedup_key = content.strip()[:80]
+                        if content and dedup_key not in seen_texts:
+                            seen_texts.add(dedup_key)
+                            extra_parts.append(content)
+                    if extra_parts:
+                        context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
+                        context_parts.extend(extra_parts)
+            except Exception as e:
+                print(f"Hybrid search error in /chat: {e}")
 
     # Generate final answer
     final_context = "\n".join(context_parts)
