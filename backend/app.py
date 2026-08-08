@@ -23,7 +23,9 @@ from utils import (
     process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer, generate_answer_stream,
     extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text,
-    extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg, hybrid_search_rrf, execute_neo4j_pyq_search
+    extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg,
+    hybrid_search_rrf, execute_neo4j_pyq_search, upload_question_image_to_cloudinary,
+    delete_document_images_from_cloudinary, delete_all_images_from_cloudinary
 )
 
 from typing import List, Optional
@@ -106,7 +108,7 @@ async def classify_query_intent(question: str) -> str:
         return "GRAPH_PYQ_MAPPING"
     elif any(k in q_lower for k in ["syllabus", "topics", "units", "course outcomes", "objectives"]):
         return "SIMPLE_CURRICULUM"
-    elif any(k in q_lower for k in ["questions on", "list questions", "pyq", "past year"]):
+    elif any(k in q_lower for k in ["question", "questions", "pyq", "past year", "exam", "paper", "midterm", "mid-term", "endsem", "end-sem", "problem", "problems", "circuit"]):
         return "SIMPLE_PYQ"
         
     # Tier 2: LLM Fallback (Slow)
@@ -128,7 +130,7 @@ Question: {question}
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-                timeout=10.0
+                timeout=25.0
             )
             ans = response.json().get("response", "").strip().upper()
             if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING"]:
@@ -343,9 +345,23 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         import re
         images = re.findall(r'!\[.*?\]\(.*?\)', final_context)
         if images:
-            image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(images)
-            full_response.append(image_block)
-            yield image_block
+            combined_response_str = "".join(full_response)
+            unique_images = []
+            for img in images:
+                # Extract URL from the markdown tag e.g. ![...](url)
+                url_match = re.search(r'\((https?://.*?)\)', img)
+                if url_match:
+                    url = url_match.group(1)
+                    if url not in combined_response_str:
+                        unique_images.append(img)
+                else:
+                    if img not in combined_response_str:
+                        unique_images.append(img)
+
+            if unique_images:
+                image_block = "\n\n### Diagrams from Questions:\n" + "\n\n".join(unique_images)
+                full_response.append(image_block)
+                yield image_block
             
         _set_cache(cache_key, "".join(full_response))
 
@@ -539,8 +555,11 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
             except Exception as graph_err:
                 print(f"Error cleaning up Neo4j for document {doc_id}: {graph_err}")
 
-            # 3. Clean up physical image files from disk
+            # 3. Clean up physical image files from disk and Cloudinary
             try:
+                # Cloudinary delete
+                delete_document_images_from_cloudinary(str(doc_id))
+
                 images_dir = "uploads/images"
                 if os.path.exists(images_dir):
                     for fname in os.listdir(images_dir):
@@ -592,15 +611,17 @@ async def reset_system(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         errors.append(f"Neo4j error: {e}")
 
-    # 3. Wipe Disk (Delete the entire uploads folder and recreate it empty)
+    # 3. Wipe Disk and Cloudinary (Delete local uploads and wipe Cloudinary bucket)
     try:
+        delete_all_images_from_cloudinary()
+        
         uploads_dir = "uploads"
         if os.path.exists(uploads_dir):
             shutil.rmtree(uploads_dir)
             os.makedirs(uploads_dir)
         print("System Reset: Uploads folder cleared.")
     except Exception as e:
-        errors.append(f"File system error: {e}")
+        errors.append(f"File system / Cloudinary error: {e}")
 
     # If any step failed, return a 500 error outlining what went wrong
     if errors:
@@ -751,7 +772,7 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
     
     if structured_qs:
         print(f"[PYQ] Text extractor found {len(structured_qs)} questions. Mapping to KG...")
-        map_pyq_structured_to_kg(neo4j_driver, structured_qs)
+        map_pyq_structured_to_kg(neo4j_driver, structured_qs, str(document_id))
         
         async for db in get_db():
             for q in structured_qs:
@@ -788,17 +809,12 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                 if not questions:
                     continue
 
-                # Save the physical image of the chunk to the disk so the frontend can display it
+                # Upload the page image chunk to Cloudinary (or local fallback)
                 image_bytes = base64.b64decode(chunk_data["base64"])
-                page_num = chunk_data['page'] + 1
+                page_num_lbl = chunk_data['page'] + 1
                 chunk_index = chunk_data['chunk_index']
-                image_filename = f"images/{document_id}_page_{page_num}_chunk_{chunk_index}.jpg"
-                image_path = f"uploads/{image_filename}"
-                image_url = f"http://localhost:8000/static/{image_filename}"
-                
-                os.makedirs("uploads/images", exist_ok=True)
-                with open(image_path, "wb") as f:
-                    f.write(image_bytes)
+                public_id = f"{document_id}_page_{page_num_lbl}_chunk_{chunk_index}"
+                image_url = upload_question_image_to_cloudinary(image_bytes, public_id)
 
                 # Map extracted questions into the KG
                 map_questions_to_kg(neo4j_driver, course_code, questions, document_id, image_url)
@@ -816,8 +832,7 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                         continue
                         
                     # Append the markdown image link so the LLM includes it in the chat
-                    markdown_image = f"![PYQ Page - {course_code}](http://localhost:8000/static/{image_filename})"
-                    
+                    markdown_image = f"![PYQ Page - {course_code}]({image_url})"                    
                     labeled_content = f"[PYQ - {course_code} - {q.get('question_number')}]\n{q_text}\nImplicit Formulas: {', '.join(q.get('implicit_formulas', []))}\n\n{markdown_image}"
                     
                     embedding = await get_embedding(labeled_content)

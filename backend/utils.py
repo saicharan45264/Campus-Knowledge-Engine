@@ -1,4 +1,5 @@
 import os
+import io
 import base64
 import httpx
 import json
@@ -28,6 +29,95 @@ OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL",       "gemma4:12b-it-qat")
 
 # This small, fast model (137 million parameters) is used ONLY to convert text into math vectors.
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+# -----------------------------------------------------------------------------
+# Cloudinary Configuration
+# -----------------------------------------------------------------------------
+try:
+    import cloudinary
+    import cloudinary.uploader
+    import cloudinary.api
+    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+    CLOUDINARY_API_KEY    = os.getenv("CLOUDINARY_API_KEY", "")
+    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
+    if CLOUDINARY_CLOUD_NAME:
+        cloudinary.config(
+            cloud_name=CLOUDINARY_CLOUD_NAME,
+            api_key=CLOUDINARY_API_KEY,
+            api_secret=CLOUDINARY_API_SECRET,
+            secure=True
+        )
+        print(f"[Cloudinary] Configured for cloud: {CLOUDINARY_CLOUD_NAME}")
+    else:
+        print("[Cloudinary] No credentials set — images will be saved locally.")
+except ImportError:
+    cloudinary = None
+    CLOUDINARY_CLOUD_NAME = ""
+    print("[Cloudinary] Package not installed — images will be saved locally.")
+
+
+def upload_question_image_to_cloudinary(image_bytes: bytes, public_id: str) -> str:
+    """
+    Uploads a cropped question image to Cloudinary and returns its secure HTTPS URL.
+    If Cloudinary is not configured, falls back to saving the image locally and
+    returns a localhost URL instead — so the system never crashes.
+
+    Args:
+        image_bytes: Raw JPEG bytes of the cropped question image.
+        public_id:   A unique identifier string used as the Cloudinary asset name.
+
+    Returns:
+        A publicly accessible HTTPS URL (Cloudinary) or a localhost URL (fallback).
+    """
+    if cloudinary and CLOUDINARY_CLOUD_NAME:
+        try:
+            buf = io.BytesIO(image_bytes)
+            result = cloudinary.uploader.upload(
+                buf,
+                public_id=f"campus_ke/{public_id}",
+                resource_type="image",
+                overwrite=True,
+                transformation=[{"fetch_format": "auto", "quality": "auto"}]
+            )
+            url = result.get("secure_url", "")
+            print(f"[Cloudinary] Uploaded: {url}")
+            return url
+        except Exception as e:
+            print(f"[Cloudinary] Upload failed ({e}), falling back to local storage.")
+
+    # --- Local fallback ---
+    filename = f"{public_id}.jpg"
+    local_path = f"uploads/images/{filename}"
+    os.makedirs("uploads/images", exist_ok=True)
+    with open(local_path, "wb") as f:
+        f.write(image_bytes)
+    return f"http://localhost:8000/static/images/{filename}"
+
+
+def delete_document_images_from_cloudinary(document_id: str):
+    """
+    Deletes all Cloudinary resources starting with the document prefix.
+    """
+    if cloudinary and CLOUDINARY_CLOUD_NAME:
+        try:
+            prefix = f"campus_ke/{document_id}"
+            res = cloudinary.api.delete_resources_by_prefix(prefix)
+            print(f"[Cloudinary] Deleted resources with prefix '{prefix}': {res}")
+        except Exception as e:
+            print(f"[Cloudinary] Failed to delete resources for doc {document_id}: {e}")
+
+
+def delete_all_images_from_cloudinary():
+    """
+    Deletes all Cloudinary resources in the campus_ke/ folder.
+    """
+    if cloudinary and CLOUDINARY_CLOUD_NAME:
+        try:
+            prefix = "campus_ke/"
+            res = cloudinary.api.delete_resources_by_prefix(prefix)
+            print(f"[Cloudinary] Wiped all resources with prefix '{prefix}': {res}")
+        except Exception as e:
+            print(f"[Cloudinary] Failed to wipe all Cloudinary resources: {e}")
 
 
 # =============================================================================
@@ -425,7 +515,7 @@ Answer:
                         "num_ctx": 8192
                     }
                 },
-                timeout=45.0
+                timeout=120.0
             )
             response.raise_for_status()
             # Return the generated text string
@@ -474,7 +564,8 @@ Answer:
                         data = json.loads(line)
                         yield data.get("response", "")
     except Exception as e:
-        yield f"Error communicating with the AI model: {type(e).__name__}: {e}"
+        print(f"Ollama API Error in generate_answer_stream: {e}")
+        yield f"*(AI reformatting unavailable: {type(e).__name__}). Showing database search results below:*\n\n{context}"
 
 
 
@@ -799,134 +890,269 @@ def add_prerequisite_edges(neo4j_driver, prerequisite_map):
                 """, target_code=target_code, prereq_code=prereq_code)
 
 
+def _render_page_image(page, scale: float = 2.0) -> "Image.Image":
+    """
+    Renders a PyMuPDF page into a Pillow Image at the given scale.
+    """
+    matrix = fitz.Matrix(scale, scale)
+    pixmap = page.get_pixmap(matrix=matrix)
+    return Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+
+
+def _expand_bbox_for_graphics(page, y_top: float, y_bottom: float,
+                              page_height: float, hard_ceiling: float) -> float:
+    """
+    Scans a page for raster images and vector drawings that start between
+    y_top and y_bottom (plus a small look-ahead), and expands y_bottom to
+    fully enclose them.
+
+    CRITICAL: the result is capped at `hard_ceiling` so that graphics that
+    belong to the NEXT question cannot pull this question's crop past that
+    boundary.  Pass the next question's y_start as hard_ceiling; pass
+    page_height when this is the last question on the page.
+    """
+    new_bottom = y_bottom
+    # Look-ahead: only grab graphics that START within the current box.
+    # Never peek more than 30 PDF pts below the current boundary.
+    look_ahead = min(y_bottom + 30, hard_ceiling)
+
+    # Check embedded raster images
+    for img_info in page.get_image_info():
+        bbox = img_info.get("bbox", None)
+        if bbox:
+            img_y0, img_y1 = bbox[1], bbox[3]
+            if y_top - 5 <= img_y0 <= look_ahead:
+                new_bottom = max(new_bottom, min(img_y1 + 5, hard_ceiling))
+
+    # Check vector drawings (circuit diagram lines, boxes, arcs)
+    for drawing in page.get_drawings():
+        rect = drawing.get("rect", None)
+        if rect:
+            draw_y0, draw_y1 = rect.y0, rect.y1
+            if y_top - 5 <= draw_y0 <= look_ahead:
+                new_bottom = max(new_bottom, min(draw_y1 + 5, hard_ceiling))
+
+    return min(new_bottom, hard_ceiling)
+
+
 def extract_pyq_structured(file_path: str, course_code: str, document_id: str = "") -> list[dict]:
     """
-    Extracts structured questions from PYQ PDFs using PyMuPDF text mode and Regex.
-    Handles CO, BTL tags and marks extraction.
-    Also crops individual images for each question if document_id is provided.
+    Extracts structured questions from PYQ PDFs.
+
+    Two-pass bounding-box algorithm:
+      Pass 1: Collect every question header's exact pixel y-coordinate on every page.
+      Pass 2: For each question, expand the crop box to enclose all diagrams/graphics,
+              stitch across page boundaries when a question continues to the next page,
+              and upload the final cropped image to Cloudinary (or local fallback).
     """
     if not fitz:
         print("Error: PyMuPDF is not installed. Cannot extract PYQ structured text.")
         return []
 
-    structured_questions = []
-    
     # Regex patterns
-    COURSE_CODE_RE = re.compile(r'\b([0-9]{2}[A-Z]{3}[0-9]{3})\b')
-    CO_TAG_RE      = re.compile(r'\[CO\s*0*(\d+)\]', re.IGNORECASE)
-    BTL_TAG_RE     = re.compile(r'\[BTL\s*(\d+)\]', re.IGNORECASE)
-    MARKS_RE       = re.compile(r'\((\d+)\s*[Mm]arks?\)', re.IGNORECASE)
-    FIG_RE         = re.compile(r'\bFig\.?\s*\d+\b', re.IGNORECASE)
-    Q_NUM_RE       = re.compile(r'^(\d+[a-zA-Z]?(?:\.\s*[A-Z])?)[.)]\s+', re.MULTILINE)
-    
+    CO_TAG_RE  = re.compile(r'\[CO\s*0*(\d+)\]', re.IGNORECASE)
+    BTL_TAG_RE = re.compile(r'\[BTL\s*(\d+)\]', re.IGNORECASE)
+    MARKS_RE   = re.compile(r'\[(\d+)\]|\((\d+)\s*[Mm]arks?\)', re.IGNORECASE)
+    FIG_RE     = re.compile(r'\bFig\.?\s*\d+\b|\bfigure\b', re.IGNORECASE)
+    # TOP-LEVEL questions only: "1." "2." "10." "Q1." "Question 2."
+    # Sub-questions like "1a)", "(i)", "a)" are intentionally excluded so
+    # they are captured as part of the parent question text + crop.
+    Q_NUM_RE   = re.compile(
+        r'^\s*((?:Q(?:uestion)?\s*)?\d{1,2})\.\s+',
+        re.MULTILINE | re.IGNORECASE
+    )
+    SCALE = 2.0   # Render pages at 2x resolution for crisp crops
+
+    # -------------------------------------------------------------------------
+    # PASS 1: Gather all QuestionSpan entries across pages
+    # -------------------------------------------------------------------------
+    # Each span: {q_num, page_num, y_start (PDF units), text, co_tag, btl_tag, marks, has_figure}
+    all_spans = []   # ordered list of spans across all pages
+    page_texts = []  # raw text per page (for text extraction)
+
     try:
         doc = fitz.open(file_path)
-        zoom_matrix = fitz.Matrix(2, 2)
-        
-        for page_num in range(len(doc)):
+        num_pages = len(doc)
+
+        for page_num in range(num_pages):
             page = doc[page_num]
             page_text = page.get_text("text")
-            # Split the text based on question numbers
+            page_texts.append(page_text)
             matches = list(Q_NUM_RE.finditer(page_text))
-            
-            # For image cropping, get the Y coordinates
-            y_coords = []
-            valid_matches = []
-            
-            for match in matches:
-                q_num_text = match.group(0).strip()
-                text_rects = page.search_for(q_num_text)
-                if text_rects:
-                    y_coords.append(text_rects[0].y0)
-                else:
-                    y_coords.append(0)
-                valid_matches.append(match)
 
-            pixmap = None
-            img = None
-            if document_id and valid_matches:
-                pixmap = page.get_pixmap(matrix=zoom_matrix)
-                # Convert PyMuPDF Pixmap to Pillow Image for easy cropping
-                img = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-            
-            for i, match in enumerate(valid_matches):
+            for idx, match in enumerate(matches):
                 q_num = match.group(1).strip()
-                start_idx = match.end()
-                end_idx = valid_matches[i+1].start() if i + 1 < len(valid_matches) else len(page_text)
-                
-                raw_q_text = page_text[start_idx:end_idx].strip()
-                
-                if len(raw_q_text) < 10:
+
+                # Skip obvious junk headers
+                if q_num.lower() in ('', 'q', 'question'):
                     continue
-                    
-                # Extract tags
-                co_match = CO_TAG_RE.search(raw_q_text)
-                co_tag = f"CO{co_match.group(1)}" if co_match else None
-                
-                btl_match = BTL_TAG_RE.search(raw_q_text)
-                btl_tag = f"BTL{btl_match.group(1)}" if btl_match else None
-                
-                marks_match = MARKS_RE.search(raw_q_text)
-                marks = int(marks_match.group(1)) if marks_match else None
-                
-                has_figure = bool(FIG_RE.search(raw_q_text))
-                
-                # Clean question text
-                clean_q_text = CO_TAG_RE.sub('', raw_q_text)
-                clean_q_text = BTL_TAG_RE.sub('', clean_q_text)
-                clean_q_text = MARKS_RE.sub('', clean_q_text)
-                clean_q_text = clean_q_text.strip()
-                
-                # Basic junk filtering
-                if any(junk in clean_q_text.lower() for junk in ['answer all', 'part a', 'part b', 'maximum marks', 'time:']):
+
+                # Find exact pixel Y for this question header via text search
+                search_str = match.group(0).strip()
+                rects = page.search_for(search_str)
+                y_start_pdf = rects[0].y0 if rects else 0.0
+
+                # Determine raw text extent for this question
+                start_char = match.end()
+                end_char = matches[idx + 1].start() if idx + 1 < len(matches) else len(page_text)
+                raw_text = page_text[start_char:end_char].strip()
+
+                if len(raw_text) < 8:
                     continue
-                
-                exam_name = "PYQ Exam"
-                q_id_str = f"{course_code}_{q_num}_{exam_name}"
-                q_id = hashlib.md5(q_id_str.encode()).hexdigest()
-                
-                image_url = ""
-                # Crop image for this question
-                if img and pixmap:
-                    top = y_coords[i] * 2
-                    bottom = (y_coords[i+1] * 2) if i + 1 < len(y_coords) else pixmap.height
-                    
-                    if top == 0 and i > 0:
-                        top = (y_coords[i-1] * 2) + 50
-                    
-                    crop_top = max(0, int(top - 20))
-                    crop_bottom = int(bottom)
-                    
-                    if crop_bottom - crop_top > 30:
-                        chunk_img = img.crop((0, crop_top, pixmap.width, crop_bottom))
-                        image_filename = f"{document_id}_q{q_num.replace('.', '_')}.jpg"
-                        image_path = f"uploads/images/{image_filename}"
-                        os.makedirs("uploads/images", exist_ok=True)
-                        chunk_img.save(image_path, format='JPEG', quality=85)
-                        image_url = f"http://localhost:8000/static/images/{image_filename}"
-                
-                structured_questions.append({
-                    "id": q_id,
-                    "question_number": q_num,
-                    "question_text": clean_q_text,
-                    "co_tag": co_tag,
-                    "btl_tag": btl_tag,
-                    "marks": marks,
-                    "has_figure": has_figure,
-                    "course_code": course_code,
-                    "exam_name": exam_name,
-                    "image_url": image_url
+
+                # Extract metadata tags
+                co_m  = CO_TAG_RE.search(raw_text)
+                btl_m = BTL_TAG_RE.search(raw_text)
+                mk_m  = MARKS_RE.search(raw_text)
+                marks_val = int(mk_m.group(1) or mk_m.group(2)) if mk_m else None
+
+                has_figure = bool(FIG_RE.search(raw_text))
+
+                # Clean the display text
+                clean_text = CO_TAG_RE.sub('', raw_text)
+                clean_text = BTL_TAG_RE.sub('', clean_text)
+                clean_text = MARKS_RE.sub('', clean_text).strip()
+
+                # Skip boilerplate
+                if any(junk in clean_text.lower()[:60] for junk in [
+                    'answer all', 'part a', 'part b', 'maximum marks',
+                    'time:', 'course outcomes', 'co |', 'all questions'
+                ]):
+                    continue
+
+                all_spans.append({
+                    'q_num':      q_num,
+                    'page_num':   page_num,
+                    'y_start':    y_start_pdf,   # PDF coordinate units
+                    'q_text':     clean_text,
+                    'co_tag':     f"CO{co_m.group(1)}" if co_m else None,
+                    'btl_tag':    f"BTL{btl_m.group(1)}" if btl_m else None,
+                    'marks':      marks_val,
+                    'has_figure': has_figure,
                 })
-                
+
+        # -------------------------------------------------------------------------
+        # PASS 2: Compute crop regions, stitch cross-page questions, upload images
+        # -------------------------------------------------------------------------
+        structured_questions = []
+
+        for span_idx, span in enumerate(all_spans):
+            page_num = span['page_num']
+            page     = doc[page_num]
+            page_h   = page.rect.height   # PDF units
+            page_w       = page.rect.width
+            y_start_pdf  = span['y_start']
+
+            # ── Strict boundary: next question's y_start is the hard ceiling ──
+            # This MUST NOT be violated by graphics expansion.
+            next_same_page = next(
+                (s for s in all_spans[span_idx + 1:] if s['page_num'] == page_num),
+                None
+            )
+            if next_same_page:
+                # Leave a 3-pt gap above the next question header so we don't
+                # accidentally clip its first line.
+                hard_ceiling_this_page = next_same_page['y_start'] - 3
+            else:
+                hard_ceiling_this_page = page_h  # last question: use full page
+
+            # Expand to include diagrams/drawings, but NEVER past hard ceiling
+            y_end_pdf = _expand_bbox_for_graphics(
+                page, y_start_pdf, hard_ceiling_this_page,
+                page_h, hard_ceiling_this_page
+            )
+
+            # Detect cross-page continuation:
+            # If this is the last question on page N, check if the next page's
+            # first question starts far enough down to suggest the current
+            # question's content (e.g. a diagram) continues on the next page.
+            CONTINUATION_THRESHOLD_PDF = 100  # PDF points (~35 mm)
+            next_span = all_spans[span_idx + 1] if span_idx + 1 < len(all_spans) else None
+            continues_to_next_page = (
+                next_same_page is None            # last question on this page
+                and next_span is not None         # there is a following span
+                and next_span['page_num'] == page_num + 1   # immediately next page
+                and next_span['y_start'] > CONTINUATION_THRESHOLD_PDF
+            )
+
+            # ---- Render and crop the image(s) ----
+            image_url = ""
+            if document_id:
+                try:
+                    part1_img  = _render_page_image(page, SCALE)
+                    # Strict pixel ceiling = hard_ceiling_this_page * SCALE
+                    px_ceiling = int(hard_ceiling_this_page * SCALE)
+                    crop_top   = max(0, int((y_start_pdf - 10) * SCALE))
+                    crop_bot   = min(part1_img.height, min(px_ceiling, int((y_end_pdf + 5) * SCALE)))
+                    part1_crop = part1_img.crop((0, crop_top, part1_img.width, crop_bot))
+
+                    final_img = part1_crop
+
+                    if continues_to_next_page:
+                        # Stitch with the top region of the next page.
+                        # The stitch ends STRICTLY before the next question header.
+                        next_page   = doc[page_num + 1]
+                        next_page_h = next_page.rect.height
+                        part2_img   = _render_page_image(next_page, SCALE)
+
+                        # Hard ceiling on next page = next question's y_start - 3
+                        next_hard_ceiling = (next_span['y_start'] - 3) if next_span else next_page_h
+                        cont_end_pdf = _expand_bbox_for_graphics(
+                            next_page, 0, next_hard_ceiling,
+                            next_page_h, next_hard_ceiling
+                        )
+                        cont_bot_px = min(
+                            part2_img.height,
+                            int((cont_end_pdf + 5) * SCALE)
+                        )
+                        part2_crop = part2_img.crop((0, 0, part2_img.width, cont_bot_px))
+
+                        # Vertically concatenate part1 and part2
+                        total_h  = part1_crop.height + part2_crop.height
+                        combined = Image.new("RGB", (part1_crop.width, total_h), (255, 255, 255))
+                        combined.paste(part1_crop, (0, 0))
+                        combined.paste(part2_crop, (0, part1_crop.height))
+                        final_img = combined
+
+                    # Encode to JPEG bytes and upload
+                    if final_img.height > 30:
+                        buf = io.BytesIO()
+                        final_img.save(buf, format='JPEG', quality=88)
+                        img_bytes = buf.getvalue()
+
+                        safe_q    = span['q_num'].replace('.', '_').replace(' ', '_')
+                        public_id = f"{document_id}_p{page_num + 1}_q{safe_q}"
+                        image_url = upload_question_image_to_cloudinary(img_bytes, public_id)
+
+                except Exception as crop_err:
+                    print(f"[PYQ Crop] Failed for Q{span['q_num']} page {page_num + 1}: {crop_err}")
+
+            # Build the unique question ID
+            q_id = hashlib.md5(f"{course_code}_{span['q_num']}_p{page_num}".encode()).hexdigest()
+
+            structured_questions.append({
+                "id":              q_id,
+                "question_number": span['q_num'],
+                "question_text":   span['q_text'],
+                "co_tag":          span['co_tag'],
+                "btl_tag":         span['btl_tag'],
+                "marks":           span['marks'],
+                "has_figure":      span['has_figure'],
+                "course_code":     course_code,
+                "exam_name":       "PYQ Exam",
+                "image_url":       image_url,
+            })
+
         doc.close()
+        return structured_questions
+
     except Exception as e:
         import traceback
         print(f"Error in extract_pyq_structured: {e}")
         traceback.print_exc()
-        
-    return structured_questions
+        return []
 
-def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
+def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict], document_id: str = None):
     if not structured_questions:
         return
         
@@ -940,15 +1166,23 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict]):
             co_tag = q["co_tag"]
             c_code = q["course_code"]
             image_url = q.get("image_url", "")
+            q_num = q.get("question_number", "")
             
             # Map Question to Course
             query = """
                 MERGE (q:Question {id: $q_id})
-                ON CREATE SET q.text = $q_text, q.btl = $btl, q.marks = $marks, q.has_figure = $has_fig, q.image_url = $image_url
+                SET q.text = $q_text, 
+                    q.btl = $btl, 
+                    q.marks = $marks, 
+                    q.has_figure = $has_fig, 
+                    q.image_url = $image_url,
+                    q.document_id = $doc_id,
+                    q.course_code = $c_code,
+                    q.question_number = $q_num
                 MERGE (c:Course {code: $c_code})
                 MERGE (q)-[:BELONGS_TO]->(c)
             """
-            session.run(query, q_id=q_id, q_text=q_text, btl=btl, marks=marks, has_fig=has_fig, c_code=c_code, image_url=image_url)
+            session.run(query, q_id=q_id, q_text=q_text, btl=btl, marks=marks, has_fig=has_fig, c_code=c_code, image_url=image_url, doc_id=str(document_id) if document_id else "", q_num=q_num)
             
             # Map to CO if exists
             if co_tag:

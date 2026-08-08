@@ -24,3 +24,5 @@ httpx
 # Environment variable loading
 python-dotenv
 pydantic
+pillow
+cloudinary
