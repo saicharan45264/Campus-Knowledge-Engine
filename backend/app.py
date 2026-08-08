@@ -316,6 +316,8 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
             for record in neo4j_results:
                 q_text = record.get('q_text', '')
+                # Strip CO/BTL distribution tables that bloat context but add no value
+                q_text = _re.split(r'(?:Course Outcome|CO\s*\n|\*{3,})', q_text)[0].strip()
                 key = _dedup_key(q_text)
                 if key in seen_texts:
                     continue
@@ -377,7 +379,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     # Generate final answer
     final_context = "\n".join(context_parts)
     if len(final_context) > 8000:
-        final_context = final_context[:8000] + "\n...[Context Truncated]..."
+        final_context = final_context[:12000] + "\n...[Context Truncated]..."
         
     print("DEBUG FINAL CONTEXT:")
     print(final_context)
