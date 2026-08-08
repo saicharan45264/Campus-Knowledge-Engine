@@ -124,7 +124,7 @@ Return ONLY the category name. No explanations.
 Question: {question}
 """
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
@@ -134,7 +134,7 @@ Question: {question}
             if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING"]:
                 return ans
     except Exception as e:
-        print(f"LLM classification error: {e}")
+        print(f"LLM classification error: {type(e).__name__}: {e}")
         
     return "SIMPLE_CURRICULUM" # Default fallback
 

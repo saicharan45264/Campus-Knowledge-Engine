@@ -91,7 +91,7 @@ async def describe_page_image(base64_image: str, page_num: int) -> str:
     )
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
@@ -225,7 +225,7 @@ async def describe_uploaded_image(base64_image: str) -> str:
     )
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
@@ -257,7 +257,7 @@ async def get_embedding(text: str, retries=3) -> list[float]:
     for attempt in range(retries):
         try:
             # We use httpx.AsyncClient to make non-blocking HTTP requests to Ollama
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
                 response = await client.post(
                     f"{OLLAMA_BASE_URL}/api/embeddings",
                     json={"model": OLLAMA_EMBED_MODEL, "prompt": text},
@@ -297,7 +297,7 @@ Return ONLY a JSON object containing a "triplets" key with an array of relations
 """
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
@@ -414,7 +414,7 @@ Answer:
 """
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
@@ -454,7 +454,7 @@ Question: {question}
 Answer:
 """
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             async with client.stream(
                 "POST",
                 f"{OLLAMA_BASE_URL}/api/generate",
@@ -474,7 +474,8 @@ Answer:
                         data = json.loads(line)
                         yield data.get("response", "")
     except Exception as e:
-        yield f"Error communicating with the AI model: {e}"
+        yield f"Error communicating with the AI model: {type(e).__name__}: {e}"
+
 
 
 # =============================================================================
@@ -637,7 +638,7 @@ Return ONLY a JSON object with this exact format:
 If no questions are found, return {"questions": []}. No markdown, no explanation.
 """
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
