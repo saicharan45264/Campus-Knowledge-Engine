@@ -353,15 +353,29 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             kws = [w.strip(".,!?-'\"") for w in question.lower().split() 
                    if len(w) > 3 and w not in stop_words_pg]
             if kws:
-                pg_query = " & ".join(kws)  # AND search across all keywords to prevent false positives
                 from sqlalchemy import text as sql_text
+                
+                # First try strict AND search
+                pg_query_and = " & ".join(kws)
                 pg_result = await db.execute(sql_text("""
                     SELECT content FROM document_chunks
                     WHERE tsv_content @@ to_tsquery('english', :q)
                     ORDER BY ts_rank(tsv_content, to_tsquery('english', :q)) DESC
                     LIMIT 10
-                """), {"q": pg_query})
+                """), {"q": pg_query_and})
                 pg_rows = pg_result.fetchall()
+                
+                # If strict AND fails or returns little, try OR search but limit to top 3
+                if len(pg_rows) < 2 and len(kws) > 1:
+                    pg_query_or = " | ".join(kws)
+                    extra_result = await db.execute(sql_text("""
+                        SELECT content FROM document_chunks
+                        WHERE tsv_content @@ to_tsquery('english', :q)
+                        ORDER BY ts_rank(tsv_content, to_tsquery('english', :q)) DESC
+                        LIMIT 3
+                    """), {"q": pg_query_or})
+                    pg_rows.extend(extra_result.fetchall())
+                
                 pg_extra = []
                 for row in pg_rows:
                     content = row[0] or ""
