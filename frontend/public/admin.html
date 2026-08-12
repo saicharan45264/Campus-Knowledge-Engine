@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Dashboard — CurriculumLens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../src/css/main.css">
+<link rel="stylesheet" href="../src/css/pages/admin.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div id="admin-view">
+
+  <!-- Sidebar -->
+  <aside class="admin-sidebar">
+    <div class="admin-sb-top">
+      <div class="admin-logo">M.A.C.H.</div>
+      <div class="admin-badge">Admin Panel</div>
+    </div>
+    <nav class="admin-nav">
+      <div class="admin-nav-section-label">Workspace</div>
+      <button class="a-nav-item active" onclick="window.adminNav(this,'overview')">
+        <span class="nl">Overview</span>
+        <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></span>
+      </button>
+      <button class="a-nav-item" onclick="window.adminNav(this,'upload')">
+        <span class="nl">Document Upload</span>
+        <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
+      </button>
+      <button class="a-nav-item" onclick="window.adminNav(this,'eval')">
+        <span class="nl">Evaluation</span>
+        <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
+      </button>
+      <div class="admin-nav-section-label" style="margin-top:10px;">System</div>
+      <button class="a-nav-item" onclick="window.adminNav(this,'settings')">
+        <span class="nl">Settings</span>
+        <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+      </button>
+    </nav>
+    <div class="admin-sb-footer">
+      <div class="admin-user-row">
+        <div class="avatar">AD</div>
+        <div>
+          <div class="aun" id="admin-name">Admin</div>
+          <div class="aut">Course Administrator</div>
+        </div>
+      </div>
+      <button class="btn-logout" onclick="window.logout()">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        &nbsp;Sign out
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="admin-main">
+    <div class="admin-page-header">
+      <h2>Admin Dashboard</h2>
+      <p>Manage curriculum documents and evaluate RAG pipeline performance.</p>
+    </div>
+
+    <!-- Sections -->
+    <div id="section-overview">
+      <!-- Stats Row -->
+      <div class="admin-stats-row">
+        <div class="admin-stat-card">
+          <div class="asc-val" id="stat-docs">—</div>
+          <div class="asc-label">Documents indexed</div>
+        </div>
+        <div class="admin-stat-card">
+          <div class="asc-val" id="stat-mean">—</div>
+          <div class="asc-label">Mean RAGAS score</div>
+        </div>
+        <div class="admin-stat-card">
+          <div class="asc-val">v1.0</div>
+          <div class="asc-label">Pipeline version</div>
+        </div>
+      </div>
+
+      <!-- Documents List -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <h3>Indexed Documents</h3>
+            <p>All documents currently in the knowledge base</p>
+          </div>
+          <span class="panel-tag">Library</span>
+        </div>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead><tr><th>Course Code</th><th>Type</th><th>Filename</th><th>Uploaded</th><th></th></tr></thead>
+            <tbody id="documents-table-body">
+              <tr><td colspan="5" style="text-align:center;color:var(--text-4);padding:20px;">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-upload" style="display: none;">
+      <!-- Upload Panel -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <h3>Upload Document</h3>
+            <p>Add syllabus PDFs or PYQ papers to the knowledge graph</p>
+          </div>
+          <span class="panel-tag">Ingest</span>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Document Type</label>
+            <select id="doc-type" onchange="window.docTypeChanged()">
+              <option value="">Select type…</option>
+              <option value="syllabus">Syllabus</option>
+              <option value="pyq">Past Year Questions (PYQ)</option>
+            </select>
+          </div>
+          <div class="field" id="course-code-field" style="display: none;">
+            <label>Course Code</label>
+            <input type="text" id="course-code" placeholder="e.g. CS301">
+          </div>
+          <div class="field" id="dept-field" style="display: none;">
+            <label>Department</label>
+            <input type="text" id="dept" placeholder="e.g. CSE">
+          </div>
+          <div class="field" id="year-field" style="display: none;">
+            <label>Year</label>
+            <input type="text" id="year" placeholder="e.g. 2023">
+          </div>
+        </div>
+
+        <div class="dropzone" id="dropzone"
+          ondragover="window.dzOver(event)" ondragleave="window.dzLeave(event)" ondrop="window.dzDrop(event)">
+          <input type="file" accept=".pdf" id="file-input" multiple onchange="window.fileSelected(this)">
+          <div class="dz-icon"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+          <div class="dz-text">Drop PDF here or <u>browse</u></div>
+          <div class="dz-hint">Supports PDF files up to 50 MB</div>
+          <div class="dz-filename" id="dz-filename"></div>
+        </div>
+
+        <div class="prog-wrap" id="prog-wrap">
+          <div class="prog-info">
+            <span id="prog-label">Uploading…</span>
+            <span id="prog-pct">0%</span>
+          </div>
+          <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
+        </div>
+
+        <div class="upload-ok" id="upload-ok">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Document indexed successfully into the knowledge base.
+        </div>
+        <div class="upload-error" id="upload-error">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span id="upload-error-msg">Upload failed.</span>
+        </div>
+
+        <button class="btn-upload" id="upload-btn" onclick="window.doUpload()">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload &amp; Index
+        </button>
+      </div>
+    </div>
+
+    <div id="section-eval" style="display: none;">
+      <!-- RAGAS Evaluation Panel -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <h3>RAGAS Evaluation</h3>
+            <p>RAG pipeline quality metrics on the evaluation set</p>
+          </div>
+          <span class="panel-tag">Metrics</span>
+        </div>
+
+        <div class="eval-stats">
+          <div class="eval-stat">
+            <div class="esv" id="eval-count">—</div>
+            <div class="esl">Queries evaluated</div>
+          </div>
+          <div class="eval-stat">
+            <div class="esv" id="eval-mean">—</div>
+            <div class="esl">Mean score</div>
+          </div>
+          <div class="eval-stat">
+            <div class="esv">5</div>
+            <div class="esl">Metrics tracked</div>
+          </div>
+          <div class="eval-stat">
+            <div class="esv">v1.0</div>
+            <div class="esl">Pipeline version</div>
+          </div>
+        </div>
+
+        <div class="eval-chart-wrap">
+          <canvas id="evalChart"></canvas>
+        </div>
+        <div class="eval-status">
+          <span class="status-dot"></span>
+          <span id="eval-status-text">Click below to run a fresh evaluation.</span>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn-upload" id="run-eval-btn" onclick="window.runEvaluation()" style="height:38px;font-size:13px;">
+            Run Evaluation Pipeline
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-settings" style="display: none;">
+      <!-- Danger Zone -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <h3>System Settings</h3>
+            <p>Destructive actions — use with caution</p>
+          </div>
+          <span class="panel-tag" style="background:#FFF5F5;color:#B91C1C;border-color:#F5C6CB;">Danger</span>
+        </div>
+        <div class="danger-zone">
+          <h4>⚠ Reset Entire System</h4>
+          <p>This will permanently delete ALL documents, ALL knowledge graph data, ALL uploaded files, and ALL chat history. This action cannot be undone.</p>
+          <button class="btn-danger" id="reset-btn" onclick="window.resetSystem()">Reset Everything</button>
+        </div>
+        <div id="reset-status" style="margin-top:12px;font-size:13px;color:var(--text-3);"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+<script type="module" src="../src/js/pages/admin.js"></script>
+</body>
+</html>

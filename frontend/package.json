@@ -1,0 +1,12 @@
+{
+  "name": "curriculumlens-frontend",
+  "version": "1.0.0",
+  "description": "Vanilla JS modular frontend for CurriculumLens",
+  "scripts": {
+    "dev": "serve . -p 3000",
+    "start": "serve . -p 3000"
+  },
+  "dependencies": {
+    "serve": "^14.2.1"
+  }
+}

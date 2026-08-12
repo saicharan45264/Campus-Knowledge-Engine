@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CurriculumLens — Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../src/css/main.css">
+<link rel="stylesheet" href="../src/css/pages/student.css">
+</head>
+<body>
+<div id="student-view">
+
+  <!-- Top Navigation Bar -->
+  <nav class="top-nav">
+    <div class="nav-brand">
+      <div class="nav-logo">M.A.C.H.<sub>AI</sub></div>
+    </div>
+    <div class="nav-mid">
+      <div class="nav-context">Curriculum Assistant · <strong>All indexed courses</strong></div>
+    </div>
+    <div class="nav-right">
+      <div class="user-pill">
+        <div class="avatar" id="student-avatar">ST</div>
+        <div>
+          <div class="user-name" id="student-name">Student</div>
+          <div class="user-roll">Batch 2023 · CSE</div>
+        </div>
+      </div>
+      <button class="btn-icon" title="Logout" onclick="window.logout()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Chat Layout -->
+  <div class="chat-layout">
+
+    <!-- Sidebar: History -->
+    <aside class="chat-sidebar">
+      <div class="sidebar-top">
+        <button class="btn-new-chat" onclick="window.clearChat()">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New conversation
+        </button>
+      </div>
+      <div class="sidebar-label">Recent</div>
+      <div class="sidebar-history" id="sidebar-history"></div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chat-main">
+      <div class="messages-area" id="messages">
+        <!-- Empty state injected by JS -->
+      </div>
+
+      <!-- Input Bar -->
+      <div class="chat-input-area">
+        <div class="input-wrap">
+          <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, PYQs, or any topic…"></textarea>
+          <div class="input-btns">
+            <label class="btn-attach" title="Attach file">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <input type="file" accept="image/*,.pdf" style="display:none" onchange="window.handleAttach(this)">
+            </label>
+            <button class="btn-mic" id="mic-btn" onclick="window.toggleSpeech()" title="Voice Input">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+            </button>
+            <button class="btn-send" id="send-btn" onclick="window.sendMessage()" title="Send">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="input-footer">
+          Press <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for new line
+        </div>
+      </div>
+    </main>
+
+  </div>
+</div>
+<script type="module" src="../src/js/pages/student.js"></script>
+</body>
+</html>
