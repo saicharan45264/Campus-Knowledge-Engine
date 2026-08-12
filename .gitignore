@@ -22,16 +22,10 @@ uploads/
 .vscode/
 .idea/
 *.swp
-.DS_Store
 
-# ── Node.js (Frontend) ──
-node_modules/
-.next/
-out/
+# ── OS ──
+.DS_Store
+Thumbs.db
 
 # ── Docker ──
 docker-compose.override.yml
-
-# ── OS ──
-Thumbs.db
-.DS_Store

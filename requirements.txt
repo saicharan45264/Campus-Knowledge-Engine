@@ -1,26 +1,14 @@
-# CurriculumLens Backend — Python Dependencies
-# Tested on Python 3.11
-
-# Web Framework
-fastapi
-uvicorn[standard]
-python-multipart
-
-# Database (PostgreSQL + pgvector)
-sqlalchemy[asyncio]
-asyncpg
+psycopg2-binary
 pgvector
-
-# Graph Database (Neo4j)
 neo4j
 
-# Document Processing (PDF reading)
-# Note: using latest PyMuPDF — older pinned versions don't have Python 3.14 wheels
 pymupdf
-
-# LLM Communication (async HTTP calls to Ollama)
 httpx
-
-# Environment variable loading
 python-dotenv
-pydantic
+
+# pinned because passlib doesnt support bcrypt >= 4.0.0
+passlib==1.7.4
+bcrypt<4.0.0
+python-jose[cryptography]==3.3.0
+
+Pillow

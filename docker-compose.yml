@@ -19,6 +19,17 @@ services:
       timeout: 5s
       retries: 5
 
+  # Adminer — lightweight web-based UI for PostgreSQL (like Neo4j Browser)
+  adminer:
+    image: adminer
+    container_name: cl-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Neo4j — stores the Curriculum Knowledge Graph (concepts and relationships)
   neo4j:
     image: neo4j:5.24-community
