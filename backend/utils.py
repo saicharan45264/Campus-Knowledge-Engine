@@ -1127,8 +1127,8 @@ def extract_pyq_structured(file_path: str, course_code: str, document_id: str = 
                 except Exception as crop_err:
                     print(f"[PYQ Crop] Failed for Q{span['q_num']} page {page_num + 1}: {crop_err}")
 
-            # Build the unique question ID
-            q_id = hashlib.md5(f"{course_code}_{span['q_num']}_p{page_num}".encode()).hexdigest()
+            # Build the unique question ID (include document_id to prevent cross-PDF collisions)
+            q_id = hashlib.md5(f"{document_id}_{course_code}_{span['q_num']}_p{page_num}".encode()).hexdigest()
 
             structured_questions.append({
                 "id":              q_id,
@@ -1198,7 +1198,9 @@ def map_pyq_structured_to_kg(neo4j_driver, structured_questions: list[dict], doc
 def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     """Search for PYQ questions in Neo4j by keyword matching on question text."""
     stop_words = {
-        "get", "me", "a", "the", "all", "questions", "question", 
+        "get", "me", "a", "the", "all", "questions", "question", "problems", "problem",
+        "solve", "solved", "solutions", "solution", "calculate", "write", "analyse", "analysis",
+        "determine", "derive", "sketch", "draw", "obtain", "evaluate",
         "on", "about", "find", "show", "list", "give", "related",
         "are", "there", "any", "is", "what", "how", "why", "who", "where",
         "can", "you", "tell", "explain", "describe", "provide",

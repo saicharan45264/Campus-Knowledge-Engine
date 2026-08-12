@@ -107,6 +107,14 @@ chatForm.addEventListener('submit', async (e) => {
         
         // Step 3: Handle the server's streaming response
         if (response.ok) {
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+                const data = await response.json();
+                if (data.type === "problem_list") {
+                    renderProblemList(data.topic, data.problems);
+                    return;
+                }
+            }
             // Setup an empty message bubble for the AI — appendMessage now returns the content div directly
             const targetDiv = appendMessage('ai', '');
             
@@ -211,3 +219,125 @@ imageUploadInput.addEventListener('change', async (e) => {
     // Reset the file input so the same file can be uploaded again if needed
     imageUploadInput.value = '';
 });
+
+/**
+ * Renders a structured list of practice problems as a responsive card grid.
+ * @param {string} topic - The topic name
+ * @param {Array} problems - The list of problem objects
+ */
+function renderProblemList(topic, problems) {
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'message ai-message problem-list-message';
+    
+    const senderName = document.createElement('span');
+    senderName.className = 'sender-name';
+    senderName.textContent = 'CurriculumLens';
+    msgDiv.appendChild(senderName);
+    
+    const title = document.createElement('h3');
+    title.className = 'problem-list-title';
+    title.textContent = `Practice Problems on: ${topic}`;
+    msgDiv.appendChild(title);
+    
+    if (!problems || problems.length === 0) {
+        const noProblems = document.createElement('div');
+        noProblems.className = 'document-body';
+        noProblems.textContent = 'No practice problems found in the database for this topic.';
+        msgDiv.appendChild(noProblems);
+        chatBox.appendChild(msgDiv);
+        chatBox.scrollTop = chatBox.scrollHeight;
+        return;
+    }
+    
+    const gridDiv = document.createElement('div');
+    gridDiv.className = 'problem-grid';
+    
+    problems.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'problem-card';
+        
+        // Course Code badge
+        const badge = document.createElement('span');
+        badge.className = 'course-badge';
+        badge.textContent = p.course_code || 'General';
+        card.appendChild(badge);
+        
+        // Question number
+        if (p.question_number && p.question_number !== 'Unknown') {
+            const qNum = document.createElement('span');
+            qNum.className = 'question-number-tag';
+            qNum.textContent = `Q${p.question_number}`;
+            card.appendChild(qNum);
+        }
+        
+        // Question text
+        const qText = document.createElement('p');
+        qText.className = 'problem-text';
+        qText.textContent = p.text;
+        card.appendChild(qText);
+        
+        // Image thumbnail if available
+        if (p.image_url && p.image_url !== 'None' && p.image_url !== '') {
+            const imgContainer = document.createElement('div');
+            imgContainer.className = 'thumbnail-container';
+            
+            const img = document.createElement('img');
+            img.src = p.image_url;
+            img.className = 'problem-thumbnail';
+            img.alt = `Circuit diagram or figure for question`;
+            
+            // When thumbnail is clicked, open full-screen modal
+            imgContainer.addEventListener('click', () => {
+                openImageModal(p.image_url);
+            });
+            
+            imgContainer.appendChild(img);
+            card.appendChild(imgContainer);
+        }
+        
+        gridDiv.appendChild(card);
+    });
+    
+    msgDiv.appendChild(gridDiv);
+    chatBox.appendChild(msgDiv);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+/**
+ * Opens a full-screen zoom modal for circuit diagrams.
+ * @param {string} imageUrl - Cloudinary URL of the image
+ */
+function openImageModal(imageUrl) {
+    let modal = document.getElementById('global-image-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'global-image-modal';
+        modal.className = 'image-modal';
+        
+        const modalImg = document.createElement('img');
+        modalImg.id = 'global-modal-img';
+        modalImg.className = 'modal-content';
+        
+        const closeBtn = document.createElement('span');
+        closeBtn.className = 'modal-close';
+        closeBtn.innerHTML = '&times;';
+        closeBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+        
+        // Close modal when clicking outside the image
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+        
+        modal.appendChild(closeBtn);
+        modal.appendChild(modalImg);
+        document.body.appendChild(modal);
+    }
+    
+    const modalImg = document.getElementById('global-modal-img');
+    modalImg.src = imageUrl;
+    modal.style.display = 'flex';
+}

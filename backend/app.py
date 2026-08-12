@@ -5,7 +5,8 @@ import shutil
 
 # FastAPI is the core framework used to build our web API
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from query_neo4j import fetch_all_problems_by_topic
 from contextlib import asynccontextmanager
 # CORSMiddleware allows our frontend (HTML files) to communicate with this backend
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,6 +103,10 @@ async def classify_query_intent(question: str) -> str:
     q_lower = question.lower()
     
     # Tier 1: Fast Keyword Routing
+    # Check for problem list requests first
+    if any(marker in q_lower for marker in ["problems on", "problem on", "questions on", "question on", "pyqs on", "pyq on", "problems about", "questions about"]):
+        return "PROBLEM_LIST"
+        
     if any(k in q_lower for k in ["prerequisite", "before taking", "should i know", "requires", "needed for"]):
         return "MULTI_HOP_PREREQ"
     elif any(k in q_lower for k in ["btl", "co1", "co2", "co3", "co4", "co5", "bloom", "mapped to", "course outcome questions"]):
@@ -117,8 +122,9 @@ You are a query classification engine for a university information system.
 Classify the user's question into exactly one primary category.
 
 Categories:
+- "PROBLEM_LIST": Questions asking for problem sets, practice problems, or exam questions on a specific academic topic (e.g. "problems on superposition theorem").
 - "SIMPLE_CURRICULUM": Questions about courses, syllabus content, units, topics, learning outcomes.
-- "SIMPLE_PYQ": Questions asking for past year questions on a topic.
+- "SIMPLE_PYQ": Questions asking for a specific, single past year question (e.g., "what is question 5 of course EEE104?").
 - "MULTI_HOP_PREREQ": Questions asking about course prerequisites or what to know before taking a course.
 - "GRAPH_PYQ_MAPPING": Questions asking for questions mapped to specific Course Outcomes (COs) or Bloom's Taxonomy Levels (BTLs).
 
@@ -133,7 +139,7 @@ Question: {question}
                 timeout=25.0
             )
             ans = response.json().get("response", "").strip().upper()
-            if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING"]:
+            if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING", "PROBLEM_LIST"]:
                 return ans
     except Exception as e:
         print(f"LLM classification error: {type(e).__name__}: {e}")
@@ -232,6 +238,43 @@ def _set_cache(key, val):
         del _chat_cache[oldest]
 
 
+def extract_topic_from_query(question: str) -> str:
+    """Extract the topic from the user query."""
+    q_lower = question.lower()
+    
+    # Try common markers
+    markers = [
+        "problems on", "problem on", "questions on", "question on", 
+        "pyqs on", "pyq on", "problems about", "questions about", 
+        "questions for", "problems for", "find questions on", "find problems on"
+    ]
+    for marker in markers:
+        if marker in q_lower:
+            idx = q_lower.find(marker)
+            extracted = question[idx + len(marker):].strip("? .!").strip()
+            if extracted:
+                return extracted.title()
+                
+    # Fallback: remove stop words and return the remaining words capitalized
+    stop_words_for_topic = {
+        "get", "me", "a", "the", "all", "questions", "question", "problems", "problem",
+        "pyqs", "pyq", "on", "about", "for", "find", "show", "list", "give", "related",
+        "are", "there", "any", "is", "what", "how", "why", "who", "where", "can", "you",
+        "tell", "explain", "describe", "provide", "please", "past", "year"
+    }
+    words = question.split()
+    clean_words = []
+    for w in words:
+        w_clean = w.strip(".,!?-'\"")
+        if w_clean.lower() not in stop_words_for_topic:
+            clean_words.append(w)
+            
+    if clean_words:
+        return " ".join(clean_words).title()
+        
+    return question.strip("? .!").title()
+
+
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
@@ -255,7 +298,16 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     
     neo4j_driver = get_neo4j()
     
-    if intent == "MULTI_HOP_PREREQ":
+    if intent == "PROBLEM_LIST":
+        topic_name = extract_topic_from_query(question)
+        problems = fetch_all_problems_by_topic(neo4j_driver, topic_name)
+        return JSONResponse(content={
+            "type": "problem_list",
+            "topic": topic_name,
+            "problems": problems
+        })
+        
+    elif intent == "MULTI_HOP_PREREQ":
         records = execute_graph_prereq_query(neo4j_driver, question)
         if records:
             context_parts.append("--- PREREQUISITE GRAPH KNOWLEDGE ---")
@@ -518,12 +570,12 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
                 neo4j_driver = get_neo4j()
                 with neo4j_driver.session() as session:
                     if doc.doc_type == "pyq":
-                        # Delete Question nodes tagged with this document_id or course_code
+                        # Delete Question nodes tagged with this document_id
                         session.run("""
                             MATCH (q:Question)
-                            WHERE q.document_id = $doc_id OR (q.course_code = $c_code AND $c_code IS NOT NULL)
+                            WHERE q.document_id = $doc_id
                             DETACH DELETE q
-                        """, doc_id=str(doc_id), c_code=c_code)
+                        """, doc_id=str(doc_id))
                         
                         # Delete orphan QuestionModel nodes
                         session.run("""
