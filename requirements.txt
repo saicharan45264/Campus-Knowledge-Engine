@@ -26,3 +26,6 @@ python-dotenv
 pydantic
 pillow
 cloudinary
+
+# JWT Authentication
+python-jose[cryptography]

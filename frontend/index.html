@@ -1,0 +1,81 @@
+<!--
+  ~ 🎓 CurriculumLens - Modular Academic Curriculum Hub
+  ~ Developed as our Final Year Project (FYP).
+  ~ Entry point of the application featuring our custom Canvas-based Knowledge Graph animation.
+  ~ Fully responsive, semantic HTML, and PWA ready!
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — CurriculumLens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="src/css/main.css">
+<link rel="stylesheet" href="src/css/pages/login.css">
+<link rel="manifest" href="./manifest.json">
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./service-worker.js');
+  }
+</script>
+</head>
+<body>
+<div id="auth-view">
+
+  <!-- Left: Animated Knowledge Graph panel -->
+  <div class="auth-left">
+    <div class="auth-graph-zone">
+      <canvas id="kg-canvas"></canvas>
+    </div>
+    <div class="auth-brand">
+      <div class="auth-eyebrow">Amrita Vishwa Vidyapeetham · Coimbatore</div>
+      <div class="auth-logo">M.A.C.H.</div>
+      <p class="auth-tagline">A knowledge graph &amp; RAG system that makes your entire curriculum searchable, comparable, and queryable — in plain language.</p>
+      <div class="auth-pills">
+        <div class="auth-pill">Knowledge Graph</div>
+        <div class="auth-pill">RAG · Retrieval</div>
+        <div class="auth-pill">Syllabus + PYQ</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Login Form -->
+  <div class="auth-right">
+    <div class="login-card">
+      <div class="login-card-header">
+        <h2>Sign in to M.A.C.H.</h2>
+        <p>Modular Academic Curriculum Hub — your AI-powered study companion.</p>
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="auth-user" placeholder="Enter your username" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="auth-pass" placeholder="Enter your password" autocomplete="current-password">
+      </div>
+      <div class="auth-error" id="auth-error"></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btn-student" onclick="window.doLogin('student')">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg>
+          Student
+        </button>
+        <button class="btn btn-outline" id="btn-admin" onclick="window.doLogin('admin')">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Admin
+        </button>
+      </div>
+      <div class="auth-demo">
+        <div class="auth-demo-title">Demo credentials</div>
+        <div class="auth-demo-row"><span>student / student123</span><span>Student access</span></div>
+        <div class="auth-demo-row"><span>admin / admin123</span><span>Admin access</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script type="module" src="src/js/pages/login.js"></script>
+</body>
+</html>

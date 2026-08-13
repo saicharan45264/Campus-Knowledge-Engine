@@ -2,10 +2,13 @@ import os
 import uuid
 import base64
 import shutil
+from datetime import datetime, timedelta
 
 # FastAPI is the core framework used to build our web API
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks, Response
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from jose import jwt
 from query_neo4j import fetch_all_problems_by_topic
 from contextlib import asynccontextmanager
 # CORSMiddleware allows our frontend (HTML files) to communicate with this backend
@@ -16,7 +19,7 @@ from sqlalchemy import select, text
 # Pydantic is used to define the structure of incoming data (like JSON requests)
 from pydantic import BaseModel
 import uvicorn
-from fastapi.staticfiles import StaticFiles
+# StaticFiles already imported above
 
 # Import our custom database configurations and models
 from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
@@ -78,7 +81,7 @@ app = FastAPI(title="CurriculumLens Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],       # Allow requests from any origin
-    allow_credentials=True,
+    allow_credentials=False,   # False because we use Bearer tokens, not cookies
     allow_methods=["*"],       # Allow all HTTP methods (GET, POST, DELETE, etc.)
     allow_headers=["*"],       # Allow all HTTP headers
 )
@@ -86,6 +89,111 @@ app.add_middleware(
 # Mount the static directory so the frontend can retrieve images
 os.makedirs("uploads/images", exist_ok=True)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
+
+# Serve the new M.A.C.H. frontend at /public/
+# The frontend directory lives one level up from backend/
+_frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+if os.path.isdir(_frontend_dir):
+    app.mount("/public", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+
+
+# =============================================================================
+# Route: GET / — Convenience redirect to the frontend login page
+# =============================================================================
+
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/public/index.html")
+
+
+# =============================================================================
+# Auth Configuration (Option A — hardcoded demo credentials + JWT)
+# =============================================================================
+
+_JWT_SECRET    = os.getenv("JWT_SECRET",         "mach-curriculum-lens-secret-2026")
+_JWT_ALGORITHM = os.getenv("JWT_ALGORITHM",      "HS256")
+_JWT_EXPIRE    = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+
+# Demo credentials — matches the hints shown on the login page
+_USERS = {
+    "student": {"password": "student123", "role": "student"},
+    "admin":   {"password": "admin123",   "role": "admin"},
+}
+
+def _create_token(username: str, role: str) -> str:
+    payload = {
+        "sub": username,
+        "role": role,
+        "exp": datetime.utcnow() + timedelta(minutes=_JWT_EXPIRE),
+    }
+    return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+
+
+# =============================================================================
+# Route: POST /login — JWT Authentication
+# =============================================================================
+
+from fastapi import Form as FastForm
+
+@app.post("/login")
+async def login(
+    username: str = FastForm(...),
+    password: str = FastForm(...)
+):
+    """
+    Validates credentials against the hardcoded demo user dict.
+    Returns a signed JWT access token on success.
+    The new M.A.C.H. frontend decodes the JWT to extract the user's role.
+    """
+    user = _USERS.get(username.lower())
+    if not user or user["password"] != password:
+        raise HTTPException(status_code=401, detail="Incorrect username or password.")
+
+    token = _create_token(username.lower(), user["role"])
+    return {"access_token": token, "token_type": "bearer"}
+
+
+# =============================================================================
+# Route: POST /feedback/{message_id} — Student Thumbs Up/Down
+# =============================================================================
+
+class FeedbackRequest(BaseModel):
+    score: int  # 1 = helpful, -1 = not helpful
+
+@app.post("/feedback/{message_id}")
+async def submit_feedback(message_id: str, body: FeedbackRequest):
+    """
+    Receives thumbs-up/down feedback from the student chat UI.
+    Logs it for now; can be persisted to a DB table in future.
+    """
+    print(f"[Feedback] message_id={message_id}  score={body.score}")
+    return {"message": "Feedback recorded", "message_id": message_id, "score": body.score}
+
+
+# =============================================================================
+# Route: GET /evaluate — RAGAS Evaluation Metrics
+# =============================================================================
+
+@app.get("/evaluate")
+async def get_evaluation():
+    """
+    Returns RAGAS pipeline evaluation metrics for the Admin dashboard chart.
+    Returns placeholder scores; replace with real RAGAS evaluation when available.
+    """
+    metrics = {
+        "context_precision": 0.82,
+        "faithfulness":      0.91,
+        "answer_relevance":  0.78,
+        "context_recall":    0.88,
+        "answer_correctness": 0.85,
+    }
+    mean = round(sum(metrics.values()) / len(metrics), 2)
+    return {
+        "metrics":     metrics,
+        "num_samples": 5,
+        "model":       os.getenv("OLLAMA_MODEL", "local"),
+        "mean":        mean,
+    }
 
 
 # =============================================================================
@@ -213,6 +321,7 @@ def execute_graph_syllabus_query(neo4j_driver, question: str) -> list:
 class ChatRequest(BaseModel):
     """Defines the expected JSON structure when a student asks a question."""
     message: str
+    session_id: Optional[str] = None  # Client-side session tracking; unused server-side for now
 
 import asyncio
 from functools import lru_cache
@@ -301,11 +410,16 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     if intent == "PROBLEM_LIST":
         topic_name = extract_topic_from_query(question)
         problems = fetch_all_problems_by_topic(neo4j_driver, topic_name)
-        return JSONResponse(content={
-            "type": "problem_list",
-            "topic": topic_name,
-            "problems": problems
-        })
+        # Add X-Response-Type header so the frontend can detect this is a structured
+        # JSON payload (problem card layout) rather than a streaming text response.
+        return JSONResponse(
+            content={
+                "type": "problem_list",
+                "topic": topic_name,
+                "problems": problems,
+            },
+            headers={"X-Response-Type": "problem_list"},
+        )
         
     elif intent == "MULTI_HOP_PREREQ":
         records = execute_graph_prereq_query(neo4j_driver, question)
@@ -480,6 +594,7 @@ async def upload_document(
     files: List[UploadFile] = File(...),
     doc_type: str = Form(...),
     department: Optional[str] = Form(None),
+    dept: Optional[str] = Form(None),          # new frontend sends 'dept', old sends 'department'
     year: Optional[str] = Form(None),
     course_code: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db)
@@ -489,6 +604,8 @@ async def upload_document(
     Depending on `doc_type` ("syllabus" or "pyq"), dispatches to the correct pipeline.
     """
     os.makedirs("uploads", exist_ok=True)
+    # Normalise: accept 'dept' (new frontend) OR 'department' (old frontend / direct API calls)
+    department = department or dept
     
     # Save the files and dispatch tasks
     for file in files:
@@ -532,10 +649,12 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
         docs = result.scalars().all()
         
         # Format the results into a list of dictionaries
+        # doc_type is included so the new frontend can render it in the admin table
         return [
             {
                 "id": str(doc.id),
                 "filename": doc.filename,
+                "doc_type": doc.doc_type,
                 "course_code": doc.course_code,
                 "created_at": doc.created_at.isoformat()
             }
