@@ -3,6 +3,7 @@ import io
 import base64
 import httpx
 import json
+import uuid
 
 from dotenv import load_dotenv
 
@@ -845,14 +846,11 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list, documen
             q_num = str(q.get("question_number", ""))
             marks = str(q.get("marks", ""))
             
-            # The QuestionModel groups similar questions by topic/structure
-            qm_name = f"Model: {likely_topic}"
-            
+            q_id = str(uuid.uuid4())
             session.run("""
-                MERGE (c:Course {code: $c_code})
-                MERGE (qm:QuestionModel {name: $qm_name, course_code: $c_code})
-                MERGE (c)-[:HAS_QUESTION_MODEL]->(qm)
+                MERGE (doc:Document {id: $doc_id})
                 CREATE (q:Question {
+                    id: $q_id,
                     text: $q_text, 
                     question_number: $q_num, 
                     marks: $marks, 
@@ -861,8 +859,8 @@ def map_questions_to_kg(neo4j_driver, course_code: str, questions: list, documen
                     course_code: $c_code,
                     image_url: $image_url
                 })
-                MERGE (qm)-[:HAS_QUESTION]->(q)
-            """, c_code=course_code, qm_name=qm_name, q_text=q_text, q_num=q_num, marks=marks, implicit_formulas=implicit_formulas, doc_id=str(document_id) if document_id else "", image_url=str(image_url) if image_url else "")
+                MERGE (q)-[:EXTRACTED_FROM]->(doc)
+            """, q_id=q_id, c_code=course_code, q_text=q_text, q_num=q_num, marks=marks, implicit_formulas=implicit_formulas, doc_id=str(document_id) if document_id else "", image_url=str(image_url) if image_url else "")
 
 
 import hashlib

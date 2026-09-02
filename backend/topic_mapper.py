@@ -31,12 +31,9 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'), override=True)
 
 OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL",    "http://localhost:11434")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL",       "gemma4:12b-it-qat")
 
-AUTO_APPROVE_THRESHOLD   = float(os.getenv("TOPIC_MAP_AUTO_APPROVE_THRESHOLD",   "0.80"))
-SECONDARY_MIN_THRESHOLD  = float(os.getenv("TOPIC_MAP_SECONDARY_MIN_THRESHOLD",  "0.70"))
-SECONDARY_MAX_GAP        = float(os.getenv("TOPIC_MAP_SECONDARY_MAX_GAP",        "0.15"))
-MAX_TOPICS               = int(os.getenv("TOPIC_MAP_MAX_TOPICS",                 "2"))
+MAX_TOPICS         = int(os.getenv("TOPIC_MAP_MAX_TOPICS",                 "2"))
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +89,27 @@ def _keyword_score(q_text: str, t_name: str) -> float:
     intersection = q_tokens & t_tokens
     union        = q_tokens | t_tokens
     return len(intersection) / len(union)
+
+
+def _question_topic_match_score(q_text: str, t_name: str) -> float:
+    """Strong direct-match heuristic for exact topic names in question text."""
+    q_lower = " ".join(w.lower().strip(".,;:()-[]{}'\"") for w in q_text.split())
+    t_lower = " ".join(w.lower().strip(".,;:()-[]{}'\"") for w in t_name.split())
+
+    if not q_lower or not t_lower:
+        return 0.0
+
+    exact = 1.0 if t_lower in q_lower else 0.0
+    if exact:
+        return 1.0
+
+    q_tokens = {w for w in q_lower.split() if len(w) > 2 and w not in _STOP_WORDS}
+    t_tokens = {w for w in t_lower.split() if len(w) > 2 and w not in _STOP_WORDS}
+    if not q_tokens or not t_tokens:
+        return 0.0
+
+    overlap = len(q_tokens & t_tokens)
+    return (overlap / max(len(t_tokens), 1)) * 0.85 if overlap else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -174,74 +192,128 @@ async def map_question_to_topics(
     if not topics:
         return []
 
-    # Get question embedding
-    q_emb = await _get_embedding(q_text)
-    if not q_emb:
-        return []
+    topic_names = [t["name"] for t in topics]
+    topic_list_str = "\n".join(f"- {name}" for name in topic_names)
 
-    # Score each topic
-    scored = []
-    for topic in topics:
-        # Get or compute topic embedding
-        emb_json = topic.get("embedding_json")
-        if emb_json:
-            try:
-                t_emb = json.loads(emb_json)
-            except Exception:
-                t_emb = []
-        else:
-            t_emb = []
+    prompt = f"""You are a curriculum-aware PYQ topic classification system.
 
-        if not t_emb:
-            t_emb = await _get_embedding(topic["name"])
-            if t_emb:
-                _save_topic_embedding(driver, topic["id"], t_emb)
+Your task is to determine which EXISTING curriculum Topic node(s) are
+tested by the given previous-year question.
 
-        sem_score = _cosine_similarity(q_emb, t_emb)
-        kw_score  = _keyword_score(q_text, topic["name"])
-        confidence = 0.80 * sem_score + 0.20 * kw_score
+The curriculum topics provided below are the ONLY valid topics that may
+be returned.
 
-        scored.append({
-            "topic_id":      topic["id"],
-            "topic_name":    topic["name"],
-            "confidence":    round(confidence, 4),
-            "semantic_score": round(sem_score, 4),
-            "keyword_score":  round(kw_score, 4),
-        })
+IMPORTANT RULES:
+1. Understand the meaning, concepts, terminology, and intent of the
+   question before selecting a topic.
+2. Compare the question against the EXISTING curriculum topics.
+3. Select the most appropriate existing curriculum topic(s).
+4. A question may belong to ONE OR MORE topics if it genuinely tests
+   concepts from multiple topics.
+5. You MUST use ONLY topic names from the provided topic list.
+6. NEVER invent a new topic.
+7. NEVER create, rename, paraphrase, shorten, expand, or modify a topic
+   name.
+8. Return the topic name EXACTLY as it appears in the provided topic list.
+9. Do NOT return the Course name as a topic.
+10. Do NOT return the Unit name as a topic.
+11. If a specific Topic exists, always prefer the Topic instead of mapping
+    the question to a broader Course or Unit.
+12. Do NOT select a topic merely because it is vaguely related to the
+    question.
+13. Select a topic only when there is strong, unambiguous evidence that
+    the question tests that specific topic or theorem. If a compound topic exists
+    (e.g., "Theorem X, Topic Y"), only select it if the question explicitly tests
+    the core concepts of Theorem X or Topic Y. Do NOT map generic AC/phasor
+    analysis questions to specific named network theorems like Superposition Theorem
+    unless the question actually asks to use that theorem.
+14. If none of the provided curriculum topics is a sufficiently confident
+    match, return "Other".
+15. "Other" is a fallback classification. It is NOT permission to invent
+    a new topic.
+16. Do NOT return explanations, reasoning, or additional text outside the
+    requested JSON format.
 
-    # Sort descending by confidence
-    scored.sort(key=lambda x: x["confidence"], reverse=True)
+COURSE:
+{c_code}
+
+AVAILABLE CURRICULUM TOPICS:
+{topic_list_str}
+
+QUESTION:
+{q_text}
+
+Return JSON in exactly this format:
+{{
+  "topics": [
+    "Exact Topic Name"
+  ]
+}}
+"""
 
     mappings = []
-    primary_conf = None
+    try:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "format": "json",
+                    "stream": False,
+                    "options": {"temperature": 0.1}
+                },
+                timeout=120.0
+            )
+            resp.raise_for_status()
+            result_text = resp.json().get("response", "{}")
+            result_json = json.loads(result_text)
+            selected_topics = result_json.get("topics", [])
+            
+            # Map returned names back to Topic IDs (support exact, space-normalized, and comma variations)
+            def normalize_topic_key(k: str) -> str:
+                return re.sub(r'[\s\-_,]+', ' ', k).strip().lower()
 
-    for rank, s in enumerate(scored):
-        if rank == 0:
-            # Primary mapping
-            if s["confidence"] >= AUTO_APPROVE_THRESHOLD:
-                primary_conf = s["confidence"]
-                s["review_status"] = "approved"
-                mappings.append(s)
-                _write_tests_topic(driver, q_id, s["topic_id"],
-                                   s["confidence"], s["semantic_score"],
-                                   s["keyword_score"], "approved")
-            else:
-                break  # Primary didn't make threshold — no secondary either
+            name_to_id = {t["name"].lower().strip(): t["id"] for t in topics}
+            norm_to_id = {normalize_topic_key(t["name"]): t["id"] for t in topics}
+            
+            for t_name in selected_topics:
+                if t_name == "Other":
+                    continue
+                
+                t_lower = t_name.lower().strip()
+                t_norm = normalize_topic_key(t_name)
+                matched_id = name_to_id.get(t_lower) or norm_to_id.get(t_norm)
 
-        elif rank == 1 and primary_conf is not None:
-            # Secondary mapping — stricter rules
-            gap = primary_conf - s["confidence"]
-            if (s["confidence"] >= SECONDARY_MIN_THRESHOLD
-                    and gap <= SECONDARY_MAX_GAP):
-                s["review_status"] = "approved"
-                mappings.append(s)
-                _write_tests_topic(driver, q_id, s["topic_id"],
-                                   s["confidence"], s["semantic_score"],
-                                   s["keyword_score"], "approved")
-            break  # At most 2 mappings regardless
+                # Also try sub-splits if LLM returned comma-separated topics
+                matched_ids = []
+                if matched_id:
+                    matched_ids.append((matched_id, t_name))
+                elif "," in t_name:
+                    for sub_t in t_name.split(","):
+                        sub_t_clean = sub_t.strip()
+                        sub_id = name_to_id.get(sub_t_clean.lower()) or norm_to_id.get(normalize_topic_key(sub_t_clean))
+                        if sub_id:
+                            matched_ids.append((sub_id, sub_t_clean))
 
-        if len(mappings) >= MAX_TOPICS:
-            break
+                if matched_ids:
+                    for t_id, matched_name in matched_ids:
+                        mappings.append({
+                            "topic_id": t_id,
+                            "topic_name": matched_name,
+                            "confidence": 1.0,
+                            "semantic_score": 1.0,
+                            "keyword_score": 1.0,
+                            "review_status": "approved"
+                        })
+                        _write_tests_topic(
+                            driver, q_id, t_id, 1.0, 1.0, 1.0, "approved"
+                        )
+                else:
+                    print(f"[TopicMapper] Warning: LLM returned invalid topic '{t_name}'")
+                    
+    except Exception as e:
+        print(f"[TopicMapper] LLM Generation error ({type(e).__name__}): {e}")
 
     return mappings
 

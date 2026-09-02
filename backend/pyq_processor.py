@@ -136,12 +136,12 @@ def save_questions_to_neo4j(
                         q.extraction_status   = 'accepted',
                         q.created_at          = $now
 
-                    MERGE (c:Course {code: $c_code})
-                    MERGE (q)-[:BELONGS_TO]->(c)
-
                     WITH q
                     MATCH (doc:Document {id: $doc_id})
                     MERGE (q)-[:EXTRACTED_FROM]->(doc)
+                    WITH q
+                    MATCH (c:Course {code: $c_code})
+                    MERGE (q)-[:BELONGS_TO]->(c)
                 """, q_id=q_id, q_text=q_text, q_num=q_num, btl=btl,
                     marks=marks, has_fig=has_fig, img_url=img_url,
                     doc_id=document_id, c_code=c_code, now=now_iso)
@@ -158,7 +158,9 @@ def save_questions_to_neo4j(
                         MERGE (co:CourseOutcome {id: $co_id})
                         ON CREATE SET co.course_code = $c_code
                         MERGE (q)-[:MAPPED_TO_CO]->(co)
-                        MERGE (co)-[:BELONGS_TO]->(c:Course {code: $c_code})
+                        WITH co, q
+                        MATCH (c:Course {code: $c_code})
+                        MERGE (co)-[:BELONGS_TO]->(c)
                     """, q_id=q_id, co_id=co_tag, c_code=c_code)
                     report.mapped_to_co += 1
 

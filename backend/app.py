@@ -1187,6 +1187,17 @@ async def process_pyq_background(
                     await db.rollback()
             break
 
+        # ── Stage 4: Topic mapping (async, best-effort) for Vision Fallback ──
+        try:
+            t_map_start = time.time()
+            map_result = await topic_mapper_run_for_document(
+                neo4j_driver, doc_id_str, report
+            )
+            report.mapped_to_topic = map_result.get("mapped", 0)
+            report.timings["topic_map_s"] = round(time.time() - t_map_start, 2)
+        except Exception as map_err:
+            print(f"[PYQ] Topic mapping error (non-fatal): {map_err}")
+
         report.finalize()
         final_status = report.status
         print(f"[PYQ] Finished vision fallback for {course_code}!")
@@ -1429,6 +1440,7 @@ async def admin_pyq_questions_detail(
             MATCH (q:Question)-[:BELONGS_TO]->(c:Course {code: $code})
             OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
             OPTIONAL MATCH (q)-[tr:TESTS_TOPIC]->(t:Topic)
+            WITH q, co, collect(t.name) AS topics, collect(tr.confidence) AS confidences
             RETURN DISTINCT
                 q.document_id       AS upload_id,
                 q.question_number   AS question_number,
@@ -1436,11 +1448,25 @@ async def admin_pyq_questions_detail(
                 q.marks             AS marks,
                 q.btl               AS btl,
                 co.id               AS course_outcome,
-                t.name              AS mapped_syllabus_topic,
-                tr.confidence       AS mapping_confidence,
+                topics,
+                confidences,
                 q.image_url         AS image_url
-            ORDER BY upload_id, question_number
+            ORDER BY upload_id, toInteger(q.question_number)
         """, code=course_code).data()
+        
+        for record in records:
+            if record.get("topics"):
+                valid_topics = [t for t in record["topics"] if t]
+                record["mapped_syllabus_topic"] = ", ".join(valid_topics) if valid_topics else None
+            else:
+                record["mapped_syllabus_topic"] = None
+                
+            if record.get("confidences"):
+                valid_conf = [c for c in record["confidences"] if c]
+                record["mapping_confidence"] = valid_conf[0] if valid_conf else None
+            else:
+                record["mapping_confidence"] = None
+
     return {"course_code": course_code, "questions": records, "total": len(records)}
 
 

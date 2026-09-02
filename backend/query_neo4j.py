@@ -24,19 +24,34 @@ def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
             WHERE r.review_status = 'approved'
             OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
             OPTIONAL MATCH (q)-[:EXTRACTED_FROM]->(doc:Document)
+            WITH q, doc,
+                 collect(DISTINCT co.id) AS course_outcomes,
+                 collect(DISTINCT t.name) AS topics,
+                 max(r.confidence) AS max_confidence
+            WITH q.text AS text,
+                 collect(q.id)[0] AS id,
+                 collect(q.question_number)[0] AS question_number,
+                 collect(q.marks)[0] AS marks,
+                 collect(q.btl)[0] AS btl,
+                 collect(q.image_url)[0] AS image_url,
+                 collect(q.course_code)[0] AS course_code,
+                 collect(course_outcomes[0])[0] AS co_id,
+                 collect(topics[0])[0] AS topic_name,
+                 max(max_confidence) AS mapping_confidence,
+                 collect(doc.filename)[0] AS source_document
             RETURN
-                q.id               AS id,
-                q.question_number  AS question_number,
-                q.text             AS text,
-                q.marks            AS marks,
-                q.btl              AS btl,
-                q.image_url        AS image_url,
-                q.course_code      AS course_code,
-                co.id              AS co_id,
-                t.name             AS topic_name,
-                r.confidence       AS mapping_confidence,
-                doc.filename       AS source_document
-            ORDER BY r.confidence DESC
+                id,
+                question_number,
+                text,
+                marks,
+                btl,
+                image_url,
+                course_code,
+                co_id,
+                topic_name,
+                mapping_confidence,
+                source_document
+            ORDER BY mapping_confidence DESC, toInteger(question_number) ASC
         """, topic=topic)
         return result.data()
 
@@ -95,15 +110,23 @@ def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
                                 WHERE replace(toLower(q.text), "'", "") CONTAINS term))
                OR replace(toLower(q.text), "'", "") CONTAINS toLower($topic)
             OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
-            RETURN q.id AS id,
-                   q.question_number AS question_number,
-                   q.text AS text,
-                   q.image_url AS image_url,
-                   c.code AS course_code,
-                   co.id AS co_id,
+            WITH q, c, collect(DISTINCT co.id) AS course_outcomes
+            WITH q.text AS text,
+                 collect(q.id)[0] AS id,
+                 collect(q.question_number)[0] AS question_number,
+                 collect(q.image_url)[0] AS image_url,
+                 collect(c.code)[0] AS course_code,
+                 collect(course_outcomes[0])[0] AS co_id
+            RETURN id,
+                   question_number,
+                   text,
+                   image_url,
+                   course_code,
+                   co_id,
                    null AS topic_name,
                    null AS mapping_confidence,
                    null AS source_document
+            ORDER BY toInteger(question_number) ASC
         """, word_groups=word_groups, topic=topic)
         return result.data()
 

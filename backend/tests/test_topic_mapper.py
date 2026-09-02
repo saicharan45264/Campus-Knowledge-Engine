@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import math
 import pytest
 from topic_mapper import (
-    _cosine_similarity, _keyword_score,
+    _cosine_similarity, _keyword_score, _question_topic_match_score,
     AUTO_APPROVE_THRESHOLD, SECONDARY_MIN_THRESHOLD, SECONDARY_MAX_GAP, MAX_TOPICS
 )
 
@@ -45,6 +45,13 @@ class TestKeywordScore:
     def test_no_overlap_score_zero(self):
         score = _keyword_score("Turing Machine Halting Problem", "Context-Free Grammar Derivation")
         assert score == 0.0
+
+    def test_question_topic_match_score_detects_direct_topic_mentions(self):
+        score = _question_topic_match_score(
+            "Construct an NFA for the given language and compare it with a DFA.",
+            "NFA"
+        )
+        assert score >= 0.90
 
     def test_stopwords_excluded(self):
         # "using" and "following" are stop words and should not inflate the score
