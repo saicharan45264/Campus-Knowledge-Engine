@@ -24,5 +24,13 @@ httpx
 # Environment variable loading
 python-dotenv
 pydantic
+pydantic-settings
 pillow
 cloudinary
+
+# Security & Limits
+python-jose[cryptography]
+slowapi
+
+# Linting & Formatting
+ruff
