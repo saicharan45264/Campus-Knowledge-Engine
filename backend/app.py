@@ -22,14 +22,28 @@ import uvicorn
 # StaticFiles already imported above
 
 # Import our custom database configurations and models
-from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk
+from database import get_db, get_neo4j, Base, engine, Document, DocumentChunk, ProcessingReport
 from utils import (
     process_pdf, process_pyq_visuals, describe_page_image, describe_uploaded_image,
     get_embedding, extract_knowledge_graph, save_to_neo4j, generate_answer, generate_answer_stream,
-    extract_syllabus_structure, build_syllabus_kg, extract_pyq_questions, map_questions_to_kg, clean_formula_text,
+    extract_pyq_questions, map_questions_to_kg, clean_formula_text,
     extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg,
     hybrid_search_rrf, execute_neo4j_pyq_search, upload_question_image_to_cloudinary,
     delete_document_images_from_cloudinary, delete_all_images_from_cloudinary
+)
+
+# --- New focused modules (Graph RAG pipeline) ---
+from curriculum_extractor import (
+    extract_syllabus_structure, build_syllabus_kg
+)
+from pyq_processor import (
+    PYQProcessingReport, SkipReason, save_questions_to_neo4j, build_initial_report
+)
+from topic_mapper import run_for_document as topic_mapper_run_for_document
+from query_neo4j import (
+    fetch_all_problems_by_topic,
+    fetch_problems_by_topic_graph,
+    fetch_graph_for_course,
 )
 
 from typing import List, Optional
@@ -59,6 +73,12 @@ async def lifespan(app: FastAPI):
         """))
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON document_chunks USING GIN(tsv_content)
+        """))
+
+        # Ensure documents table has processing_status column
+        await conn.execute(text("""
+            ALTER TABLE documents 
+            ADD COLUMN IF NOT EXISTS processing_status VARCHAR DEFAULT 'pending'
         """))
         
     print("Database startup complete: Tables verified.")
@@ -409,14 +429,24 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     
     if intent == "PROBLEM_LIST":
         topic_name = extract_topic_from_query(question)
-        problems = fetch_all_problems_by_topic(neo4j_driver, topic_name)
-        # Add X-Response-Type header so the frontend can detect this is a structured
-        # JSON payload (problem card layout) rather than a streaming text response.
+        t_intent_start = time.time()
+
+        # ── Graph RAG path: TESTS_TOPIC traversal first ─────────────────────
+        problems = fetch_problems_by_topic_graph(neo4j_driver, topic_name)
+        used_graph = bool(problems)
+        print(f"[ROUTER] PROBLEM_LIST graph path: {len(problems)} results for '{topic_name}'")
+
+        # ── Keyword fallback: only if graph returned nothing ─────────────────
+        if not problems:
+            print(f"[ROUTER] PROBLEM_LIST graph empty — falling back to keyword search.")
+            problems = fetch_all_problems_by_topic(neo4j_driver, topic_name)
+
         return JSONResponse(
             content={
-                "type": "problem_list",
-                "topic": topic_name,
-                "problems": problems,
+                "type":       "problem_list",
+                "topic":      topic_name,
+                "problems":   problems,
+                "source":     "graph" if used_graph else "keyword_fallback",
             },
             headers={"X-Response-Type": "problem_list"},
         )
@@ -436,36 +466,44 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 context_parts.append(f"Course {r['course_code']} Question (BTL: {r['btl']}, Marks: {r['marks']}): {r['question']}")
                 
     elif intent == "SIMPLE_CURRICULUM":
-        # Search Neo4j Graph for Syllabus Units & Topics
+        t_graph_start = time.time()
         records = execute_graph_syllabus_query(neo4j_driver, question)
+        t_graph_ms = round((time.time() - t_graph_start) * 1000)
+
         if records:
+            context_parts.append("--- SYLLABUS & CURRICULUM KNOWLEDGE GRAPH ---")
             syllabus_dict = {}
             for r in records:
                 c_code = r['course_code']
                 if c_code not in syllabus_dict:
                     syllabus_dict[c_code] = {"name": r['course_name'], "units": {}}
-                if r['unit_title'] and r['topics']:
+                if r.get('unit_title') and r.get('topics'):
                     syllabus_dict[c_code]["units"][r['unit_title']] = r['topics']
-            
-            for c_code, data in syllabus_dict.items():
-                fact = f"Course Syllabus for [{c_code}] {data['name']}:\n"
-                for unit, topics in data['units'].items():
-                    fact += f"  - {unit}: " + ", ".join(topics) + "\n"
-                context_parts.append(fact)
 
-        # Also search PostgreSQL via RRF for extra prose chunks
-        question_embedding = await get_embedding(question)
-        if question_embedding:
-            try:
-                chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
-                if chunks:
-                    context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
-                    for chunk in chunks:
-                        content = chunk.get("content", "")
-                        if content:
-                            context_parts.append(content)
-            except Exception as e:
-                print(f"Hybrid search error in /chat: {e}")
+            for c_code, data in syllabus_dict.items():
+                context_parts.append(f"Course: {c_code} - {data['name']}")
+                if data["units"]:
+                    for unit_title in sorted(data["units"].keys()):
+                        topics = data["units"][unit_title]
+                        topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
+                        context_parts.append(f"  {unit_title}: {topics_str}")
+                else:
+                    context_parts.append("  (No specific units or topics recorded for this course)")
+        else:
+            # ── Fallback: only if Neo4j returned nothing ─────────────────────
+            # (e.g., course not yet uploaded, or question is asking for an explanation)
+            question_embedding = await get_embedding(question)
+            if question_embedding:
+                try:
+                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                    if chunks:
+                        context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
+                        for chunk in chunks:
+                            content = chunk.get("content", "")
+                            if content:
+                                context_parts.append(content)
+                except Exception as e:
+                    print(f"Hybrid search error in /chat: {e}")
 
     else:
         # SIMPLE_PYQ
@@ -606,7 +644,9 @@ async def upload_document(
     os.makedirs("uploads", exist_ok=True)
     # Normalise: accept 'dept' (new frontend) OR 'department' (old frontend / direct API calls)
     department = department or dept
-    
+
+    uploaded_docs = []
+
     # Save the files and dispatch tasks
     for file in files:
         file_path = f"uploads/{uuid.uuid4()}_{file.filename}"
@@ -619,18 +659,29 @@ async def upload_document(
             doc_type=doc_type,
             department=department,
             year=year,
-            course_code=course_code
+            course_code=course_code,
+            processing_status="pending",
         )
         db.add(new_doc)
         await db.commit()
         await db.refresh(new_doc)
 
-        if doc_type == "syllabus":
-            background_tasks.add_task(process_syllabus_background, file_path, department, year, new_doc.id)
-        elif doc_type == "pyq":
-            background_tasks.add_task(process_pyq_background, file_path, course_code, new_doc.id)
+        uploaded_docs.append({"id": str(new_doc.id), "filename": file.filename})
 
-    return {"message": f"{len(files)} file(s) uploaded successfully! Processing in the background."}
+        if doc_type == "syllabus":
+            background_tasks.add_task(
+                process_syllabus_background, file_path, department, year, new_doc.id
+            )
+        elif doc_type == "pyq":
+            background_tasks.add_task(
+                process_pyq_background, file_path, course_code, new_doc.id
+            )
+
+    return {
+        "message": f"{len(files)} file(s) queued for processing. "
+                   f"Check /admin/pyq-processing/<document_id> for status.",
+        "documents": uploaded_docs,
+    }
 
 
 # =============================================================================
@@ -647,16 +698,15 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
         # Query the Document table, ordering by creation date descending
         result = await db.execute(select(Document).order_by(Document.created_at.desc()))
         docs = result.scalars().all()
-        
-        # Format the results into a list of dictionaries
-        # doc_type is included so the new frontend can render it in the admin table
+
         return [
             {
-                "id": str(doc.id),
-                "filename": doc.filename,
-                "doc_type": doc.doc_type,
-                "course_code": doc.course_code,
-                "created_at": doc.created_at.isoformat()
+                "id":               str(doc.id),
+                "filename":         doc.filename,
+                "doc_type":         doc.doc_type,
+                "course_code":      doc.course_code,
+                "created_at":       doc.created_at.isoformat(),
+                "processing_status": doc.processing_status,
             }
             for doc in docs
         ]
@@ -909,45 +959,142 @@ async def image_query_endpoint(
 # Background Task Logic
 # =============================================================================
 
-async def process_syllabus_background(file_path: str, department: str, year: str, document_id: uuid.UUID):
-    print(f"[Syllabus] Starting processing for {department} {year}...")
-    
-    # Extract text from the PDF
-    chunks = process_pdf(file_path)
-    full_text = " ".join(chunks)
+async def process_syllabus_background(
+    file_path: str, department: str, year: str, document_id: uuid.UUID
+):
+    """
+    Extracts curriculum structure from a PDF using the new curriculum_extractor module.
+    Preserves page boundaries. Writes Document, Course, Unit, and Topic nodes to Neo4j.
+    Updates Document.processing_status in PostgreSQL when done.
+    """
+    doc_id_str = str(document_id)
+    print(f"[Syllabus] Starting processing for {department} {year} (doc={doc_id_str})...")
 
-    # With the new deterministic regex parser, we don't need to chunk the text!
-    # We can pass the entire massive syllabus string directly.
+    # Mark as processing
+    async for db in get_db():
+        await db.execute(
+            text("UPDATE documents SET processing_status = 'processing' WHERE id = :id"),
+            {"id": doc_id_str}
+        )
+        await db.commit()
+        break
+
     neo4j_driver = get_neo4j()
-    
-    print(f"[Syllabus] Using deterministic regex parser on full text ({len(full_text)} chars)...")
-    structure = await extract_syllabus_structure(full_text, department, year)
-    courses = structure.get("courses", [])
-    
-    # Build Knowledge Graph
-    if courses:
-        build_syllabus_kg(neo4j_driver, department, year, courses)
+    status = "failed"
+    try:
+        # extract_syllabus_structure now receives the FILE PATH, not joined text.
+        # It opens the PDF page-by-page internally to preserve line structure.
+        structure = await extract_syllabus_structure(
+            file_path=file_path,
+            dept=department,
+            year=year,
+            document_id=doc_id_str
+        )
+        courses = structure.get("courses", [])
 
-    # (Removed redundant vector embedding loop for syllabus text)
-    # The entire Syllabus structure is now perfectly captured in the Neo4j Knowledge Graph,
-    # so we don't need to hammer the Ngrok tunnel with 4,000+ vector embedding requests.
-    
-    print(f"[Syllabus] Finished processing {department} {year}.")
+        if courses:
+            build_syllabus_kg(neo4j_driver, department, year, courses, document_id=doc_id_str)
+            status = "completed"
+        else:
+            print(f"[Syllabus] No courses extracted from {file_path}.")
+            status = "failed"
 
-async def process_pyq_background(file_path: str, course_code: str, document_id: uuid.UUID):
-    print(f"[PYQ] Starting processing for {course_code}...")
+    except Exception as e:
+        import traceback
+        print(f"[Syllabus] Fatal error: {e}")
+        traceback.print_exc()
+        status = "failed"
+
+    # Update processing status in PostgreSQL
+    async for db in get_db():
+        await db.execute(
+            text("UPDATE documents SET processing_status = :status WHERE id = :id"),
+            {"status": status, "id": doc_id_str}
+        )
+        await db.commit()
+        break
+
+    print(f"[Syllabus] Finished processing {department} {year} — status: {status}.")
+
+
+async def process_pyq_background(
+    file_path: str, course_code: str, document_id: uuid.UUID
+):
+    """
+    Extracts structured questions from a PYQ PDF, writes them to Neo4j using the
+    canonical Question → BELONGS_TO → Course path, embeds them in PostgreSQL,
+    collects a full ProcessingReport, and kicks off async topic mapping.
+
+    Updates Document.processing_status in PostgreSQL when done.
+    """
+    import time
+    doc_id_str = str(document_id)
+    print(f"[PYQ] Starting processing for {course_code} (doc={doc_id_str})...")
+
     neo4j_driver = get_neo4j()
 
-    # Stage 1: Structured Text Extractor (fast, CO/BTL-aware)
-    structured_qs = extract_pyq_structured(file_path, course_code, str(document_id))
-    
+    # Get filename from PostgreSQL for the report
+    filename = file_path.split("/")[-1]
+    async for db in get_db():
+        result = await db.execute(
+            text("SELECT filename FROM documents WHERE id = :id"), {"id": doc_id_str}
+        )
+        row = result.first()
+        if row:
+            filename = row[0]
+        await db.execute(
+            text("UPDATE documents SET processing_status = 'processing' WHERE id = :id"),
+            {"id": doc_id_str}
+        )
+        await db.commit()
+        break
+
+    # ── Stage 1: Structured text extractor (fast, CO/BTL-aware) ────────────
+    t_extract_start = time.time()
+    structured_qs = extract_pyq_structured(file_path, course_code, doc_id_str)
+    t_extract_s = round(time.time() - t_extract_start, 2)
+
+    # Detect total pages
+    total_pages = 0
+    try:
+        import fitz as _fitz
+        _doc = _fitz.open(file_path)
+        total_pages = len(_doc)
+        _doc.close()
+    except Exception:
+        pass
+
+    # Build initial report from structured extraction results
+    skip_reasons_list = []
+    report = PYQProcessingReport(
+        document_id=doc_id_str,
+        filename=filename,
+        course_code=course_code,
+        total_pages=total_pages,
+        candidates_detected=len(structured_qs),
+        accepted=len(structured_qs),
+        skipped=0,
+        skip_reasons=skip_reasons_list,
+        status="processing",
+        timings={"extraction_s": t_extract_s},
+    )
+
+    final_status = "failed"
+
     if structured_qs:
-        print(f"[PYQ] Text extractor found {len(structured_qs)} questions. Mapping to KG...")
-        map_pyq_structured_to_kg(neo4j_driver, structured_qs, str(document_id))
-        
+        print(f"[PYQ] Text extractor found {len(structured_qs)} questions. Writing to Neo4j...")
+
+        # ── Stage 2: Write to Neo4j (canonical path) ────────────────────────
+        save_questions_to_neo4j(neo4j_driver, structured_qs, doc_id_str, report)
+
+        # ── Stage 3: Embed and store in PostgreSQL ──────────────────────────
+        t_embed_start = time.time()
+        embed_count = 0
         async for db in get_db():
             for q in structured_qs:
-                labeled_content = f"[PYQ - {course_code} - {q['question_number']}]\n{q['question_text']}"
+                labeled_content = (
+                    f"[PYQ - {course_code} - {q['question_number']}]\n{q['question_text']}"
+                )
                 embedding = await get_embedding(labeled_content)
                 if embedding:
                     text_chunk = DocumentChunk(
@@ -958,74 +1105,415 @@ async def process_pyq_background(file_path: str, course_code: str, document_id: 
                         embedding=embedding
                     )
                     db.add(text_chunk)
+                    embed_count += 1
             await db.commit()
             break
+        report.embedded_postgres = embed_count
+        report.timings["embed_s"] = round(time.time() - t_embed_start, 2)
+
+        # ── Stage 4: Topic mapping (async, best-effort) ─────────────────────
+        try:
+            t_map_start = time.time()
+            map_result = await topic_mapper_run_for_document(
+                neo4j_driver, doc_id_str, report
+            )
+            report.mapped_to_topic = map_result.get("mapped", 0)
+            report.timings["topic_map_s"] = round(time.time() - t_map_start, 2)
+        except Exception as map_err:
+            print(f"[PYQ] Topic mapping error (non-fatal): {map_err}")
+
+        report.finalize()
+        final_status = report.status
         print(f"[PYQ] Finished processing structured text for {course_code}!")
-        return
-        
-    print(f"[PYQ] Text extractor found 0 questions. Falling back to Vision AI...")
 
-    # Stage 2: Vision pipeline
-    # Render pages as chunked images
-    page_chunks = process_pyq_visuals(file_path)
-    print(f"[PYQ] Rendered {len(page_chunks)} image chunks.")
+    else:
+        # ── Stage 1b: Vision pipeline fallback (scanned PDFs) ──────────────
+        print(f"[PYQ] Text extractor found 0 questions. Falling back to Vision AI...")
+        page_chunks = process_pyq_visuals(file_path)
+        print(f"[PYQ] Rendered {len(page_chunks)} image chunks.")
 
-    async for db in get_db():
-        for i, chunk_data in enumerate(page_chunks):
-            print(f"[PYQ] Extracting questions from chunk {i+1}/{len(page_chunks)} via Vision AI...")
-            try:
-                # Extract questions via Vision
-                questions = await extract_pyq_questions(chunk_data["base64"])
-                
-                if not questions:
-                    continue
-
-                # Upload the page image chunk to Cloudinary (or local fallback)
-                image_bytes = base64.b64decode(chunk_data["base64"])
-                page_num_lbl = chunk_data['page'] + 1
-                chunk_index = chunk_data['chunk_index']
-                public_id = f"{document_id}_page_{page_num_lbl}_chunk_{chunk_index}"
-                image_url = upload_question_image_to_cloudinary(image_bytes, public_id)
-
-                # Map extracted questions into the KG
-                map_questions_to_kg(neo4j_driver, course_code, questions, document_id, image_url)
-                
-                for q in questions:
-                    if isinstance(q, str):
-                        q = {"text": q, "question_number": "Unknown", "likely_topic": "General", "implicit_formulas": []}
-                        
-                    q_text = q.get("text", "")
-                    
-                    # Validate q_text before storing to prevent junk/JSON
-                    if len(q_text) < 20 or q_text.startswith('{') or '{"' in q_text:
+        async for db in get_db():
+            for i, chunk_data in enumerate(page_chunks):
+                print(f"[PYQ] Extracting from chunk {i+1}/{len(page_chunks)} via Vision AI...")
+                try:
+                    questions = await extract_pyq_questions(chunk_data["base64"])
+                    if not questions:
                         continue
-                    if any(junk in q_text[:50].lower() for junk in ['answer all', 'part a', 'part b', 'co |', 'course outcomes']):
-                        continue
-                        
-                    # Append the markdown image link so the LLM includes it in the chat
-                    markdown_image = f"![PYQ Page - {course_code}]({image_url})"                    
-                    labeled_content = f"[PYQ - {course_code} - {q.get('question_number')}]\n{q_text}\nImplicit Formulas: {', '.join(q.get('implicit_formulas', []))}\n\n{markdown_image}"
-                    
-                    embedding = await get_embedding(labeled_content)
-                    if embedding:
-                        visual_chunk = DocumentChunk(
-                            document_id=document_id,
-                            content=labeled_content,
-                            course_code=course_code,
-                            content_type="visual",
-                            embedding=embedding
+
+                    image_bytes = base64.b64decode(chunk_data["base64"])
+                    page_num_lbl = chunk_data['page'] + 1
+                    chunk_index = chunk_data['chunk_index']
+                    public_id = f"{document_id}_page_{page_num_lbl}_chunk_{chunk_index}"
+                    image_url = upload_question_image_to_cloudinary(image_bytes, public_id)
+
+                    # Legacy write path preserved for vision-extracted questions
+                    map_questions_to_kg(neo4j_driver, course_code, questions, document_id, image_url)
+
+                    for q in questions:
+                        if isinstance(q, str):
+                            q = {"text": q, "question_number": "Unknown",
+                                 "likely_topic": "General", "implicit_formulas": []}
+                        q_text = q.get("text", "")
+                        if len(q_text) < 20 or q_text.startswith('{') or '{"' in q_text:
+                            continue
+                        if any(junk in q_text[:50].lower() for junk in
+                               ['answer all', 'part a', 'part b', 'co |', 'course outcomes']):
+                            continue
+
+                        markdown_image = f"![PYQ Page - {course_code}]({image_url})"
+                        labeled_content = (
+                            f"[PYQ - {course_code} - {q.get('question_number')}]\n"
+                            f"{q_text}\nImplicit Formulas: "
+                            f"{', '.join(q.get('implicit_formulas', []))}\n\n{markdown_image}"
                         )
-                        db.add(visual_chunk)
-                        await db.commit()
+                        embedding = await get_embedding(labeled_content)
+                        if embedding:
+                            visual_chunk = DocumentChunk(
+                                document_id=document_id,
+                                content=labeled_content,
+                                course_code=course_code,
+                                content_type="visual",
+                                embedding=embedding
+                            )
+                            db.add(visual_chunk)
+                            report.saved_neo4j += 1
+                            report.embedded_postgres += 1
+                            await db.commit()
 
-            except Exception as e:
-                import traceback
-                print(f"[PYQ] Error processing chunk {chunk_data['chunk_index']} on page {chunk_data['page'] + 1}: {e}")
-                traceback.print_exc()
-                await db.rollback()
-        break
+                except Exception as e:
+                    import traceback
+                    print(f"[PYQ] Error on chunk {chunk_data['chunk_index']} p{chunk_data['page']+1}: {e}")
+                    traceback.print_exc()
+                    await db.rollback()
+            break
 
-    print(f"[PYQ] Finished processing all content for {course_code}!")
+        report.finalize()
+        final_status = report.status
+        print(f"[PYQ] Finished vision fallback for {course_code}!")
+
+    # ── Persist ProcessingReport to PostgreSQL ──────────────────────────────
+    try:
+        async for db in get_db():
+            pr = ProcessingReport(
+                document_id=document_id,
+                course_code=course_code,
+                report_json=report.to_json(),
+            )
+            db.add(pr)
+            await db.execute(
+                text("UPDATE documents SET processing_status = :status WHERE id = :id"),
+                {"status": final_status, "id": doc_id_str}
+            )
+            await db.commit()
+            break
+    except Exception as save_err:
+        print(f"[PYQ] Failed to save ProcessingReport: {save_err}")
+        async for db in get_db():
+            await db.execute(
+                text("UPDATE documents SET processing_status = :status WHERE id = :id"),
+                {"status": final_status, "id": doc_id_str}
+            )
+            await db.commit()
+            break
+
+    print(f"[PYQ] Processing complete for {course_code} — status: {final_status}.")
+
+
+# =============================================================================
+# Admin Routes — Extraction Review
+# =============================================================================
+
+def _require_admin(authorization: str = None):
+    """Verify the request carries a valid admin JWT. Returns the payload."""
+    from fastapi import Header
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    if payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return payload
+
+
+@app.get("/admin/extraction-review/courses")
+async def admin_list_courses(authorization: Optional[str] = None):
+    """List all courses with their extraction status and topic counts."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (c:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+            RETURN c.code AS code, c.name AS name,
+                   count(DISTINCT u) AS unit_count,
+                   count(DISTINCT t) AS topic_count,
+                   count(DISTINCT CASE WHEN t.approved = true THEN t END) AS approved_count,
+                   count(DISTINCT CASE WHEN t.approved = false THEN t END) AS pending_count
+            ORDER BY c.code
+        """).data()
+    return {"courses": records}
+
+
+@app.get("/admin/extraction-review/courses/{course_code}")
+async def admin_course_review(course_code: str, authorization: Optional[str] = None):
+    """Return units + topics for a course, including unit raw_text for admin review."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (c:Course {code: $code})-[:HAS_UNIT]->(u:Unit)
+            OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+            RETURN u.id AS unit_id, u.number AS unit_number, u.title AS unit_title,
+                   u.raw_text AS unit_raw_text,
+                   collect({
+                       id: t.id, name: t.name, approved: t.approved,
+                       extraction_method: t.extraction_method,
+                       extraction_confidence: t.extraction_confidence
+                   }) AS topics
+            ORDER BY u.number
+        """, code=course_code).data()
+    return {"course_code": course_code, "units": records}
+
+
+class TopicUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    approved: Optional[bool] = None
+
+@app.put("/admin/extraction-review/topics/{topic_id}")
+async def admin_update_topic(
+    topic_id: str, body: TopicUpdateRequest, authorization: Optional[str] = None
+):
+    """Edit or approve/reject a Topic node."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name
+        updates["normalized_name"] = body.name.lower().strip()
+    if body.approved is not None:
+        updates["approved"] = body.approved
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+    set_clause = ", ".join(f"t.{k} = ${k}" for k in updates)
+    with neo4j_driver.session() as session:
+        session.run(f"MATCH (t:Topic {{id: $id}}) SET {set_clause}",
+                    id=topic_id, **updates)
+    return {"status": "updated", "topic_id": topic_id}
+
+
+class TopicMergeRequest(BaseModel):
+    source_id: str
+    target_id: str
+
+@app.post("/admin/extraction-review/topics/merge")
+async def admin_merge_topics(body: TopicMergeRequest, authorization: Optional[str] = None):
+    """Merge source topic into target: move all relationships then delete source."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        # Move HAS_TOPIC relationships
+        session.run("""
+            MATCH (u:Unit)-[:HAS_TOPIC]->(src:Topic {id: $src_id})
+            MATCH (tgt:Topic {id: $tgt_id})
+            MERGE (u)-[:HAS_TOPIC]->(tgt)
+        """, src_id=body.source_id, tgt_id=body.target_id)
+        # Move TESTS_TOPIC relationships
+        session.run("""
+            MATCH (q:Question)-[r:TESTS_TOPIC]->(src:Topic {id: $src_id})
+            MATCH (tgt:Topic {id: $tgt_id})
+            MERGE (q)-[:TESTS_TOPIC {confidence: r.confidence, review_status: r.review_status,
+                                     mapping_method: r.mapping_method, mapped_at: r.mapped_at}]->(tgt)
+        """, src_id=body.source_id, tgt_id=body.target_id)
+        # Delete source
+        session.run("MATCH (t:Topic {id: $id}) DETACH DELETE t", id=body.source_id)
+    return {"status": "merged", "source_id": body.source_id, "target_id": body.target_id}
+
+
+@app.post("/admin/extraction-review/courses/{course_code}/approve")
+async def admin_approve_course_topics(
+    course_code: str, authorization: Optional[str] = None
+):
+    """Mark all Topics for this course as approved."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        result = session.run("""
+            MATCH (c:Course {code: $code})-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+            SET t.approved = true
+            RETURN count(t) AS approved_count
+        """, code=course_code).single()
+    count = result["approved_count"] if result else 0
+    return {"status": "approved", "course_code": course_code, "topics_approved": count}
+
+
+# =============================================================================
+# Admin Routes — PYQ Processing Status
+# =============================================================================
+
+@app.get("/admin/pyq-processing/{document_id}")
+async def admin_pyq_processing_status(
+    document_id: str, authorization: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Return the full ProcessingReport for a PYQ document."""
+    _require_admin(authorization)
+    result = await db.execute(
+        text("SELECT report_json FROM processing_reports WHERE document_id = :id ORDER BY created_at DESC LIMIT 1"),
+        {"id": document_id}
+    )
+    row = result.first()
+    if not row:
+        # Try to get at least the document status
+        doc_result = await db.execute(
+            text("SELECT processing_status, filename, course_code FROM documents WHERE id = :id"),
+            {"id": document_id}
+        )
+        doc = doc_result.first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        return {
+            "document_id": document_id,
+            "processing_status": doc[0],
+            "filename": doc[1],
+            "course_code": doc[2],
+            "report": None
+        }
+    import json as _json
+    report = _json.loads(row[0])
+    return {"document_id": document_id, "report": report}
+
+
+@app.get("/admin/diagnostics/pyq/{course_code}")
+async def admin_pyq_diagnostics_summary(
+    course_code: str, authorization: Optional[str] = None
+):
+    """Return PYQ stats for a course using count(DISTINCT q) to avoid double-counting."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        result = session.run("""
+            MATCH (q:Question)-[:BELONGS_TO]->(c:Course {code: $code})
+            OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
+            OPTIONAL MATCH (q)-[tr:TESTS_TOPIC]->(:Topic)
+            RETURN
+                count(DISTINCT q) AS total_questions,
+                count(DISTINCT CASE WHEN co IS NOT NULL THEN q END) AS questions_with_co,
+                count(DISTINCT CASE WHEN tr IS NOT NULL AND tr.review_status = 'approved' THEN q END) AS questions_mapped_to_topic,
+                count(DISTINCT q.document_id) AS source_documents
+        """, code=course_code).single()
+
+        per_doc = session.run("""
+            MATCH (q:Question)-[:BELONGS_TO]->(c:Course {code: $code})
+            RETURN q.document_id AS document_id, count(DISTINCT q) AS question_count
+            ORDER BY question_count DESC
+        """, code=course_code).data()
+
+    return {
+        "course_code": course_code,
+        "summary": dict(result) if result else {},
+        "per_document": per_doc
+    }
+
+
+@app.get("/admin/diagnostics/pyq/{course_code}/questions")
+async def admin_pyq_questions_detail(
+    course_code: str, authorization: Optional[str] = None
+):
+    """Return all questions for a course with mapping details."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (q:Question)-[:BELONGS_TO]->(c:Course {code: $code})
+            OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
+            OPTIONAL MATCH (q)-[tr:TESTS_TOPIC]->(t:Topic)
+            RETURN DISTINCT
+                q.document_id       AS upload_id,
+                q.question_number   AS question_number,
+                q.text              AS question,
+                q.marks             AS marks,
+                q.btl               AS btl,
+                co.id               AS course_outcome,
+                t.name              AS mapped_syllabus_topic,
+                tr.confidence       AS mapping_confidence,
+                q.image_url         AS image_url
+            ORDER BY upload_id, question_number
+        """, code=course_code).data()
+    return {"course_code": course_code, "questions": records, "total": len(records)}
+
+
+# =============================================================================
+# Admin Routes — Topic Mapping Review
+# =============================================================================
+
+@app.get("/admin/topic-mapping-review/{course_code}")
+async def admin_topic_mapping_review(
+    course_code: str, authorization: Optional[str] = None
+):
+    """List all TESTS_TOPIC relationships for a course, grouped by review_status."""
+    _require_admin(authorization)
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        records = session.run("""
+            MATCH (q:Question)-[r:TESTS_TOPIC]->(t:Topic)
+            WHERE q.course_code = $code
+            RETURN
+                id(r)               AS relationship_id,
+                q.id                AS question_id,
+                q.question_number   AS question_number,
+                q.text              AS question_text,
+                t.id                AS topic_id,
+                t.name              AS topic_name,
+                r.confidence        AS confidence,
+                r.semantic_score    AS semantic_score,
+                r.keyword_score     AS keyword_score,
+                r.review_status     AS review_status,
+                r.mapped_at         AS mapped_at
+            ORDER BY r.review_status, r.confidence DESC
+        """, code=course_code).data()
+    return {"course_code": course_code, "mappings": records, "total": len(records)}
+
+
+class MappingUpdateRequest(BaseModel):
+    review_status: str   # "approved" | "rejected"
+    topic_id: Optional[str] = None   # for re-assignment
+
+@app.put("/admin/topic-mapping-review/{relationship_id}")
+async def admin_update_mapping(
+    relationship_id: int, body: MappingUpdateRequest,
+    authorization: Optional[str] = None
+):
+    """Approve, reject, or re-assign a TESTS_TOPIC relationship."""
+    _require_admin(authorization)
+    if body.review_status not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="review_status must be 'approved' or 'rejected'.")
+    neo4j_driver = get_neo4j()
+    with neo4j_driver.session() as session:
+        session.run("""
+            MATCH ()-[r:TESTS_TOPIC]->() WHERE id(r) = $rid
+            SET r.review_status = $status
+        """, rid=relationship_id, status=body.review_status)
+    return {"status": "updated", "relationship_id": relationship_id,
+            "review_status": body.review_status}
+
+
+# =============================================================================
+# Route: /graph/{course_code} — Bidirectional course graph visualisation
+# =============================================================================
+
+@app.get("/graph/{course_code}")
+async def get_course_graph(course_code: str, limit: int = 200):
+    """
+    Returns nodes and edges for the full course graph including BOTH:
+    - Outgoing: Course → Unit → Topic (syllabus structure)
+    - Incoming: Question → BELONGS_TO → Course (canonical questions)
+    - Question → TESTS_TOPIC → Topic (Graph RAG edges)
+    """
+    neo4j_driver = get_neo4j()
+    graph = fetch_graph_for_course(neo4j_driver, course_code.upper(), limit=limit)
+    return graph
 
 
 # =============================================================================

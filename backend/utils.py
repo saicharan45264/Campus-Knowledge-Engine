@@ -356,8 +356,11 @@ async def get_embedding(text: str, retries=3) -> list[float]:
                 response.raise_for_status()
                 # The API returns a JSON object with an 'embedding' array
                 return response.json().get("embedding", [])
+        except httpx.HTTPStatusError as e:
+            print(f"[Embedding Error] HTTP {e.response.status_code}: {e.response.text}")
+            await asyncio.sleep(2)
         except Exception as e:
-            print(f"Failed to generate embedding (attempt {attempt+1}/{retries}): {e}")
+            print(f"[Embedding Error] attempt {attempt+1}/{retries}: {type(e).__name__} - {e}")
             await asyncio.sleep(2)
     return []
 
@@ -800,8 +803,12 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
             else:
                 return []
 
+    except httpx.HTTPStatusError as e:
+        print(f"[Ollama Vision Error] HTTP {e.response.status_code}: {e.response.text}")
+        return []
     except Exception as e:
-        print(f"Failed to extract PYQ questions: {e}")
+        import traceback
+        print(f"[Ollama Vision Error] Failed to extract PYQ questions: {type(e).__name__} - {e}")
         return []
 
 def clean_formula_text(text: str) -> str:

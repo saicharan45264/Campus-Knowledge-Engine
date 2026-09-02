@@ -80,6 +80,13 @@ class Document(Base):
     course_code = Column(String,   nullable=True)
     # Timestamp of when the document was uploaded
     created_at  = Column(DateTime, default=datetime.datetime.utcnow)
+    # Processing pipeline status:
+    #   pending            → queued, not yet started
+    #   processing         → background task is running
+    #   completed          → all stages succeeded (questions, embeddings, images, topic mapping)
+    #   partially_completed → at least one question saved but some stages had failures/skips
+    #   failed             → fatal error; no questions saved
+    processing_status = Column(String, nullable=False, default="pending")
 
 
 class DocumentChunk(Base):
@@ -105,6 +112,26 @@ class DocumentChunk(Base):
     # The vector embedding representing the semantic meaning of the text content.
     # The dimension is 768 to perfectly match the output of the 'nomic-embed-text' model.
     embedding   = Column(Vector(768), nullable=True)
+
+
+class ProcessingReport(Base):
+    """
+    Stores the per-document extraction and mapping report produced after each
+    PYQ or syllabus upload. Allows the admin dashboard to display exact counts,
+    skip reasons, per-stage timings, and partial-completion details without
+    re-querying Neo4j.
+
+    Table name: processing_reports
+    """
+    __tablename__ = "processing_reports"
+
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    course_code = Column(String, nullable=True)
+    # JSON payload matching the PYQProcessingReport or SyllabusProcessingReport dataclass.
+    # Stored as TEXT rather than native JSONB so we don't need an extra extension.
+    report_json = Column(Text, nullable=False, default="{}")
+    created_at  = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 # -----------------------------------------------------------------------------
