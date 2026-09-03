@@ -1,5 +1,5 @@
-import { apiFetch } from '../core/api.js';
-import { getUsername, requireRole, logout } from '../core/auth.js';
+import { apiFetch } from './api.js';
+import { getUsername, requireRole, logout } from './auth.js';
 
 requireRole('admin');
 

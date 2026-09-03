@@ -1,6 +1,11 @@
 import base64
 import http
 import os
+import sys
+
+# Store __pycache__ inside the cache/ folder to keep the root directory clean
+sys.pycache_prefix = os.path.join(os.path.dirname(__file__), "cache", "__pycache__")
+
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -41,9 +46,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # StaticFiles already imported above
 # Import our custom database configurations and models
-from db.database import Base, Document, DocumentChunk, engine, get_db, get_neo4j
-from db.query_neo4j import fetch_all_problems_by_topic
-from services.utils import (
+from database import Base, Document, DocumentChunk, engine, get_db, get_neo4j
+from query_neo4j import fetch_all_problems_by_topic
+from utils import (
     PREREQUISITE_MAP,
     add_prerequisite_edges,
     delete_all_images_from_cloudinary,
@@ -138,7 +143,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from core.config import settings
+from config import settings
 
 # Initialize Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -276,7 +281,7 @@ async def submit_feedback(message_id: str, body: FeedbackRequest):
 
 import httpx
 
-from services.utils import OLLAMA_BASE_URL, OLLAMA_MODEL
+from utils import OLLAMA_BASE_URL, OLLAMA_MODEL
 
 
 async def classify_query_intent(question: str) -> str:
@@ -1223,7 +1228,7 @@ async def process_syllabus_background(
     Builds a full dual-layer Neo4j graph (semantic + source/document).
     Supports any department (CSE, ECE, EEE, MECH, ...) and curriculum year.
     """
-    from services.syllabus_parser import SyllabusParser
+    from syllabus_parser import SyllabusParser
 
     print(f"[Syllabus] Starting GraphRAG ingestion for {department} {year}...")
     neo4j_driver = get_neo4j()

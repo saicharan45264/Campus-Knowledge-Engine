@@ -1,4 +1,4 @@
-# CurriculumLens Backend — Python Dependencies
+# M.A.C.H. Backend — Python Dependencies
 # Tested on Python 3.11
 
 # Web Framework

@@ -26,7 +26,7 @@ except ImportError:
 # -----------------------------------------------------------------------------
 # Ollama Configuration
 # -----------------------------------------------------------------------------
-from core.config import settings
+from config import settings
 
 # Fetch the base URL where Ollama is running (defaults to localhost:11434).
 OLLAMA_BASE_URL = settings.ollama_base_url

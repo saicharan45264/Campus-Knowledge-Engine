@@ -1,0 +1,2 @@
+[tool.ruff]
+cache-dir = "cache/.ruff_cache"

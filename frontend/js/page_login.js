@@ -1,8 +1,8 @@
 /**
  * 🎓 LOGIN PAGE CONTROLLER & KNOWLEDGE GRAPH ANIMATION
  */
-import { API_BASE } from '../core/api.js';
-import { setAuth } from '../core/auth.js';
+import { API_BASE } from './api.js';
+import { setAuth } from './auth.js';
 
 /* ── Login ── */
 async function doLogin(roleHint) {

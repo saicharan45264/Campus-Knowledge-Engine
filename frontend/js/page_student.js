@@ -4,9 +4,9 @@
  * streaming LLM responses, Markdown parsing, and Voice AI integration.
  * We opted for native Server-Sent Events (SSE) and Streams API instead of bulky libraries like Socket.io.
  */
-import { apiFetch } from '../core/api.js';
-import { getUsername, requireRole, logout } from '../core/auth.js';
-import { timeNow, escapeHtml, simpleMarkdown } from '../core/utils.js';
+import { apiFetch } from './api.js';
+import { getUsername, requireRole, logout } from './auth.js';
+import { timeNow, escapeHtml, simpleMarkdown } from './utils.js';
 
 requireRole('student');
 

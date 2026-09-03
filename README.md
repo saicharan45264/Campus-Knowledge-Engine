@@ -1,6 +1,5 @@
-# CurriculumLens (M.A.C.H.)
-
-**Curriculum-Grounded Knowledge Retrieval and Academic Assistance System**
+# M.A.C.H. 
+**Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG Framework for Campus Knowledge Systems.**
 
 A Graph-RAG system that turns university syllabi, regulations, timetables, and past year question papers into an interactive Knowledge Graph, allowing students to ask natural language questions grounded in official course materials.
 
@@ -9,18 +8,24 @@ A Graph-RAG system that turns university syllabi, regulations, timetables, and p
 ## 📁 Repository Structure
 
 ```
-CurriculumLens/
+MACH/
 ├── README.md               # Main project documentation & setup guide
 ├── Dockerfile              # Docker container definition for backend
 ├── docker-compose.yml      # PostgreSQL (pgvector) + Neo4j container setup
 ├── requirements.txt        # Python dependencies
 │
 ├── backend/                # FastAPI Application
-│   ├── app.py              # Server routes, CORS, JWT auth, background tasks
-│   ├── database.py         # PostgreSQL & Neo4j database connections
-│   ├── query_neo4j.py      # Knowledge graph Cypher query handlers
-│   ├── utils.py            # PDF slicing, embeddings, syllabus parser, vision AI
-│   └── config.py           # Pydantic Settings configuration
+│   ├── main.py             # Server entrypoint, CORS, background tasks
+│   ├── api/routers/        # Modular route endpoints
+│   ├── core/
+│   │   └── config.py       # Pydantic Settings configuration
+│   ├── db/
+│   │   ├── database.py     # PostgreSQL & Neo4j database connections
+│   │   └── query_neo4j.py  # Knowledge graph Cypher query handlers
+│   ├── services/
+│   │   ├── utils.py        # PDF slicing, embeddings, vision AI
+│   │   └── syllabus_parser.py # PDF text extraction logic
+│   └── cache/              # Automatically excluded cache files (__pycache__, .ruff_cache)
 │
 ├── frontend/               # Web Application Interface (PWA)
 │   ├── index.html          # Main login page
@@ -29,7 +34,7 @@ CurriculumLens/
 │   └── src/                # Modular CSS & JavaScript modules
 │
 └── docs/                   # Project Documentation
-    └── implementation_plan.md # Current implementation plan and ideas
+    └── enhancements.md     # Current implementation plan and ideas
 ```
 
 ---
@@ -79,7 +84,7 @@ pip install -r requirements.txt
 ### Step 4 — Run Backend Server
 ```bash
 cd backend
-python app.py
+python main.py
 ```
 The server will start at: `http://localhost:8000`
 
@@ -125,6 +130,6 @@ print(f"\n✅ OLLAMA URL: {public_url}\n")
 ## 🛠️ Troubleshooting
 
 - **"Connection refused" / DB Errors**: Ensure Docker Desktop is running and run `docker compose up -d`.
-- **"Failed to fetch" on Login/Chat**: Ensure the backend server (`python app.py`) is running on port 8000.
+- **"Failed to fetch" on Login/Chat**: Ensure the backend server (`python main.py`) is running on port 8000.
 - **Ollama Timeout**: If using Colab, ensure your Ngrok tunnel URL is active and updated in `.env`.
 - **System Reset**: In the Admin Panel, scroll to System Settings and click **Reset Everything** to clear database states.
