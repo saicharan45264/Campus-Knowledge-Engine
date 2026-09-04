@@ -50,17 +50,34 @@ COURSE_HEADING_RE = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
-# Unit heading: "Unit 1", "Unit 2", "SyllabusUnit 1", etc.
+# Unit heading: "Unit 1", "Unit I", "Unit IV", "SyllabusUnit 1", etc.
 UNIT_HEADING_RE = re.compile(
-    r'(?:Syllabus\s*)?Unit\s+(\d+)',
+    r'(?:Syllabus\s*)?Unit\s*([IVX]+|\d+)',
     re.IGNORECASE
 )
 
-# Stop boundary — anything on or after this line is out of bounds for topic extraction.
+# Roman numeral helper
+def _roman_to_int(s: str) -> int:
+    roman = {"I": 1, "V": 5, "X": 10}
+    s = s.upper().strip()
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    result, prev = 0, 0
+    for ch in reversed(s):
+        val = roman.get(ch, 0)
+        if val < prev:
+            result -= val
+        else:
+            result += val
+        prev = val
+    return result if result > 0 else 1
+
+# Stop boundary — only match genuine end-of-course bibliography and evaluation sections.
 STOP_BOUNDARY_RE = re.compile(
-    r'^(?:Text\s*Book|Textbook|Reference|Evaluation\s*Pattern|Course\s*Outcome'
-    r'|CO\s*Table|Bloom|Mapping|L\s*T\s*P\s*C|Prerequisite)',
-    re.IGNORECASE
+    r'^(?:TEXTBOOK|TEXT\s*BOOK|REFERENCE|ESSENTIAL\s+READING|Evaluation\s+Pattern|Assessment|TEXTBOOKS|REFERENCES)\b',
+    re.IGNORECASE | re.MULTILINE
 )
 
 # A 4-digit publication year standing alone on a word boundary
@@ -121,8 +138,6 @@ def _find_course_spans(pages: list[str]) -> list[dict]:
       {code, name, start_page, start_char, end_page, end_char}
     where start/end_char are character offsets within that page's text.
     """
-    # Build a single offset map: flat_char_offset -> (page_num, line_char)
-    # We need to search across page joins, so we process page-by-page.
     spans = []
     for page_num, page_text in enumerate(pages):
         for m in COURSE_HEADING_RE.finditer(page_text):
@@ -138,39 +153,40 @@ def _find_course_spans(pages: list[str]) -> list[dict]:
 def _unit_text_blocks(course_body: str) -> list[dict]:
     """
     Given the text of a single course (after its heading), splits it into
-    unit blocks.  Returns:
-      [{ number, title, raw_text }]
-    raw_text is the text BEFORE the first stop-boundary line.
+    unit blocks. Supports both Arabic (Unit 1) and Roman numerals (Unit I, IV).
+    Trims stop sections (Textbooks, References) safely.
     """
-    unit_matches = list(UNIT_HEADING_RE.finditer(course_body))
+    stop_match = STOP_BOUNDARY_RE.search(course_body)
+    safe_end = stop_match.start() if stop_match else len(course_body)
+    body_trimmed = course_body[:safe_end]
+
+    unit_matches = list(UNIT_HEADING_RE.finditer(body_trimmed))
     blocks = []
 
     for idx, m in enumerate(unit_matches):
-        num = int(m.group(1))
+        raw_num = m.group(1)
+        num = _roman_to_int(raw_num)
         body_start = m.end()
-        body_end = unit_matches[idx + 1].start() if idx + 1 < len(unit_matches) else len(course_body)
-        raw_unit_text = course_body[body_start:body_end]
+        body_end = unit_matches[idx + 1].start() if idx + 1 < len(unit_matches) else safe_end
+        raw_unit_text = body_trimmed[body_start:body_end]
 
-        # Apply stop boundary line-by-line
-        safe_lines = []
-        for line in raw_unit_text.splitlines():
-            if STOP_BOUNDARY_RE.match(line.strip()):
-                break
-            safe_lines.append(line)
+        inner_stop = STOP_BOUNDARY_RE.search(raw_unit_text)
+        if inner_stop:
+            raw_unit_text = raw_unit_text[:inner_stop.start()]
 
-        safe_text = "\n".join(safe_lines).strip()
-
-        blocks.append({
-            "number":   num,
-            "title":    f"Unit {num}",
-            "raw_text": safe_text,   # stored on Unit node
-        })
+        safe_text = raw_unit_text.strip()
+        if safe_text:
+            blocks.append({
+                "number":   num,
+                "title":    f"Unit {num}",
+                "raw_text": safe_text,   # stored on Unit node
+            })
 
     return blocks
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — Topic candidate extraction (deterministic, line-based)
+# Step 3 — Topic candidate extraction (delimiter splitting + hyphen preservation)
 # ---------------------------------------------------------------------------
 
 def _is_valid_topic(candidate: str) -> bool:
@@ -182,6 +198,8 @@ def _is_valid_topic(candidate: str) -> bool:
     """
     t = candidate.strip()
     if not t or len(t) < 4 or len(t) > 90:
+        return False
+    if t.lower() in {"introduction", "overview", "summary", "conclusion", "and", "the", "of", "in"}:
         return False
     # Purely numeric
     if t.replace(" ", "").isdigit():
@@ -209,12 +227,11 @@ def _is_valid_topic(candidate: str) -> bool:
 
 def _extract_topics_deterministic(unit_text: str) -> list[str]:
     """
-    Adaptive multi-tier deterministic topic extraction:
-    Tier 1 (Structural):
-      - Unwraps soft PDF line-wraps.
-      - Splits on dashes (–, —, spaced -), semicolons, list-colons, sentence boundaries, and newlines.
-    Tier 2 (Comma-separated lists):
-      - If Tier 1 yields < 2 topics on non-trivial text, splits by commas while preserving compound names.
+    Robust topic extraction:
+      1. Unwraps soft PDF line-wraps.
+      2. Splits on commas, semicolons, dashes (en/em/spaced), newlines, and bullet points.
+      3. CRITICAL: Protects internal hyphens so words like 'k-means', 'n-gram', 
+         'trade-off', 'semi-supervised' are never chopped into fragments!
     """
     if not unit_text or not unit_text.strip():
         return []
@@ -222,33 +239,29 @@ def _extract_topics_deterministic(unit_text: str) -> list[str]:
     # Unwrap soft line-wraps (newlines where subsequent line starts with a lowercase letter)
     unwrapped = re.sub(r'\n(?=[a-z])', ' ', unit_text.strip())
 
-    # Tier 1: Structural delimiters
-    delims = r'\n+|[–—]+|\s+-\s*|\s*-\s+|;\s*|\.\s+(?=[A-Z0-9])|:\s+'
+    # Delimiter pattern:
+    # - Newlines: \n+
+    # - Commas: ,
+    # - Semicolons: ;
+    # - List colons: :\s+
+    # - Em/En dashes: [–—]+
+    # - Spaced hyphens ONLY (protects 'k-means', 'Q-learning'): \s+-\s*|\s*-\s+
+    # - Sentence periods followed by uppercase: \.\s+(?=[A-Z0-9])
+    delims = r'\n+|,|;|:\s+|[–—]+|\s+-\s*|\s*-\s+|\.\s+(?=[A-Z0-9])'
     segments = re.split(delims, unwrapped)
 
     topics = []
+    seen = set()
     for seg in segments:
         clean = re.sub(r'^[\s\-\*\•\d\.\(\)]+', '', seg).strip()
         clean = re.sub(r'[\s\.\,\;\:]+$', '', clean).strip()
         clean = clean.strip('\'"“”()[]{}')
         if _is_valid_topic(clean):
             clean = re.sub(r'\s+', ' ', clean)
-            topics.append(clean)
-
-    # Tier 2: If structural delimiters yielded fewer than 2 topics, fall back to comma splitting
-    if len(topics) < 2 and ',' in unwrapped:
-        comma_delims = r'\n+|[–—]+|\s+-\s*|\s*-\s+|;\s*|\.\s+(?=[A-Z0-9])|:\s+|,\s*'
-        comma_segments = re.split(comma_delims, unwrapped)
-        comma_topics = []
-        for seg in comma_segments:
-            clean = re.sub(r'^[\s\-\*\•\d\.\(\)]+', '', seg).strip()
-            clean = re.sub(r'[\s\.\,\;\:]+$', '', clean).strip()
-            clean = clean.strip('\'"“”()[]{}')
-            if _is_valid_topic(clean):
-                clean = re.sub(r'\s+', ' ', clean)
-                comma_topics.append(clean)
-        if len(comma_topics) >= 2:
-            topics = comma_topics
+            norm = clean.lower()
+            if norm not in seen:
+                seen.add(norm)
+                topics.append(clean)
 
     return topics
 
@@ -547,13 +560,14 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list,
             if document_id:
                 session.run("""
                     MERGE (doc:Document {id: $doc_id})
-                    ON CREATE SET doc.course_code = $c_code,
-                                  doc.doc_type = 'syllabus',
+                    ON CREATE SET doc.doc_type = 'syllabus',
+                                  doc.department = $dept,
+                                  doc.year = $year,
                                   doc.created_at = $now
                     WITH doc
                     MATCH (c:Course {code: $c_code})
                     MERGE (doc)-[:CONTAINS]->(c)
-                """, doc_id=doc_id, c_code=c_code, now=now_iso)
+                """, doc_id=doc_id, dept=dept, year=year, c_code=c_code, now=now_iso)
 
             for unit in course.get("units", []):
                 u_num   = str(unit.get("number", ""))
@@ -594,7 +608,7 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list,
                         ON CREATE SET
                             t.name = $t_name,
                             t.normalized_name = $t_norm,
-                            t.raw_text = $u_raw,
+                            t.raw_text = $t_name,
                             t.document_id = $doc_id,
                             t.course_code = $c_code,
                             t.unit_number = $u_num,
@@ -604,12 +618,13 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list,
                             t.bloom_level = $t_bloom,
                             t.created_at = $now
                         ON MATCH SET
+                            t.raw_text = $t_name,
                             t.bloom_level = $t_bloom
                         WITH t
                         MATCH (u:Unit {id: $unit_id})
                         MERGE (u)-[:HAS_TOPIC]->(t)
                     """, t_id=t_id, t_name=t_name, t_norm=t_norm,
-                        u_raw=u_raw, doc_id=doc_id, c_code=c_code,
+                        doc_id=doc_id, c_code=c_code,
                         u_num=u_num, t_meth=t_meth, t_conf=t_conf,
                         t_appr=t_appr, t_bloom=t_bloom, now=now_iso, unit_id=unit_id)
 

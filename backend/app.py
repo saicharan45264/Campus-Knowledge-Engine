@@ -474,7 +474,6 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         if topic:
             print(f"[ROUTER] Vision identified topic: '{topic}'")
             neo4j_driver = get_neo4j()
-            from query_neo4j import fetch_problems_by_topic_graph
             problems = await fetch_problems_by_topic_graph(neo4j_driver, topic)
             if problems:
                 return JSONResponse(
