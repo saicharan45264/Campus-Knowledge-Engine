@@ -351,6 +351,7 @@ class ChatRequest(BaseModel):
     """Defines the expected JSON structure when a student asks a question."""
     message: str
     session_id: Optional[str] = None  # Client-side session tracking; unused server-side for now
+    image_b64: Optional[str] = None   # Base64 encoded image string for vision queries
 
 import asyncio
 from functools import lru_cache
@@ -464,6 +465,32 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     question = request.message
     session_id = request.session_id or "default_session"
     history = get_session_history(session_id)
+
+    # ── Vision path: if image attached, identify topic and fetch PYQs directly ──
+    if request.image_b64:
+        from vision_query import identify_topic_from_image
+        print(f"[ROUTER] Image attachment detected. Running vision model...")
+        topic = await identify_topic_from_image(request.image_b64)
+        if topic:
+            print(f"[ROUTER] Vision identified topic: '{topic}'")
+            neo4j_driver = get_neo4j()
+            from query_neo4j import fetch_problems_by_topic_graph
+            problems = await fetch_problems_by_topic_graph(neo4j_driver, topic)
+            if problems:
+                return JSONResponse(
+                    content={
+                        "type":     "problem_list",
+                        "topic":    topic,
+                        "problems": problems,
+                        "source":   "vision_graph",
+                    },
+                    headers={"X-Response-Type": "problem_list"},
+                )
+            else:
+                print(f"[ROUTER] No PYQs found for vision topic '{topic}'")
+        else:
+            print(f"[ROUTER] Vision model could not identify a topic.")
+        # If vision failed or no PYQs found, fall through to normal chat behavior below
 
     # Contextual query expansion using LLM to handle follow-ups robustly
     search_query = question
