@@ -4,6 +4,7 @@ import base64
 import httpx
 import json
 import uuid
+import asyncio
 
 from dotenv import load_dotenv
 
@@ -339,31 +340,14 @@ async def describe_uploaded_image(base64_image: str) -> str:
 # =============================================================================
 import asyncio
 
-async def get_embedding(text: str, retries=3) -> list[float]:
+async def get_embedding(text: str, retries=5) -> list[float]:
     """
-    Sends a string of text to Ollama and asks for its 'vector embedding'.
-    An embedding is an array of 768 numbers that represents the 'meaning' of the text.
-    We use the specialized 'nomic-embed-text' model for this.
+    Sends a string of text to Ollama and asks for its vector embedding.
+    Delegates to embed_text from embedder.py to utilize the shared
+    LRU cache, concurrency semaphore, and exponential backoff.
     """
-    for attempt in range(retries):
-        try:
-            # We use httpx.AsyncClient to make non-blocking HTTP requests to Ollama
-            async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
-                response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/embeddings",
-                    json={"model": OLLAMA_EMBED_MODEL, "prompt": text},
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                # The API returns a JSON object with an 'embedding' array
-                return response.json().get("embedding", [])
-        except httpx.HTTPStatusError as e:
-            print(f"[Embedding Error] HTTP {e.response.status_code}: {e.response.text}")
-            await asyncio.sleep(2)
-        except Exception as e:
-            print(f"[Embedding Error] attempt {attempt+1}/{retries}: {type(e).__name__} - {e}")
-            await asyncio.sleep(2)
-    return []
+    from embedder import embed_text
+    return await embed_text(text, max_retries=retries)
 
 
 # =============================================================================
@@ -484,25 +468,91 @@ def save_to_neo4j(neo4j_driver, course_code: str, triplets: list[dict]):
                 print(f"Failed to write triplet {triplet} to Neo4j: {e}")
 
 
+def _format_history_block(history: list[dict] = None) -> str:
+    """Formats the previous conversation turns for conversational memory."""
+    if not history:
+        return ""
+    lines = ["Conversation History (Previous turns in this session):"]
+    for msg in history:
+        role = "Student" if msg.get("role") == "user" else "Assistant"
+        content = msg.get("content", "").strip()
+        if content:
+            # Keep each historical message concise to save context window
+            summary = content if len(content) <= 500 else content[:500] + "..."
+            lines.append(f"{role}: {summary}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+async def rewrite_query_with_llm(question: str, history: list[dict] = None) -> str:
+    """
+    Uses the LLM to rewrite a follow-up query into a standalone search query 
+    by injecting context (e.g., course name, topic) from the conversation history.
+    """
+    if not history:
+        return question
+
+    history_block = _format_history_block(history)
+    prompt = f"""
+Given the following conversation history and the user's latest follow-up question, rewrite the follow-up question into a standalone search query that contains all necessary context (e.g., subject, course name, topic) from the history.
+Do NOT answer the question. JUST return the rewritten query.
+If the follow-up question is already fully self-contained, just return it exactly as is.
+
+{history_block}
+Follow-up Question: {question}
+
+Standalone Query:"""
+
+    try:
+        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
+            response = await client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_ctx": 4096}
+                },
+                timeout=30.0
+            )
+            response.raise_for_status()
+            rewritten = response.json().get("response", "").strip()
+            
+            # Clean up potential LLM conversational filler
+            for prefix in ["Here is the rewritten query:", "Standalone query:", "Rewritten query:", "Standalone Query:", "Rewritten:", "Query:"]:
+                if rewritten.lower().startswith(prefix.lower()):
+                    rewritten = rewritten[len(prefix):].strip()
+            return rewritten.strip('"\'*') if rewritten else question
+    except Exception as e:
+        print(f"Query rewrite error: {e}")
+        return question
+
+
+
 # =============================================================================
 # 5. Answer Generation — Produce an answer based on retrieved context
 # =============================================================================
-async def generate_answer(question: str, context: str) -> str:
+async def generate_answer(question: str, context: str, history: list[dict] = None) -> str:
     """
-    Takes the student's original question AND the context we retrieved from
-    PostgreSQL and Neo4j, and asks the large LLM to write a helpful answer.
+    Takes the student's original question, the retrieved context from
+    PostgreSQL/Neo4j, and previous conversation history, and asks the LLM for an answer.
     """
+    history_block = _format_history_block(history)
     prompt = f"""
 You are CurriculumLens, an academic AI assistant for university students.
-Answer the student's question using ONLY the information provided in the Context below.
+Answer the student's question using ONLY the information provided in the Context and Conversation History below.
 If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
+If the student refers to previous topics or questions using pronouns (like 'it', 'its', 'that', or 'the previous algorithm'), use the Conversation History to resolve what they are asking about.
 
-IMPORTANT: If the Context contains Markdown image links for diagrams (e.g. `![Diagram for ...](http://...)`), you MUST include EVERY Markdown image link directly under its corresponding question in your final answer so the student can see the circuit/diagram images.
+SYLLABUS & CURRICULUM RULES:
+1. EXACT MATCH: If the Context provides the syllabus for an exact matched course, output ONLY that course's syllabus. Clearly display the Course Code and Course Name as the heading.
+2. ASCENDING ORDER: You MUST present all Units in STRICT ASCENDING NUMERICAL ORDER (Unit 1, Unit 2, Unit 3, Unit 4, Unit 5...). Never jumble unit numbers, never repeat units, and never mix different courses together.
+3. MULTIPLE SIMILAR COURSES (NO EXACT MATCH): If the Context indicates that multiple similar courses exist (no single exact match), do NOT output full syllabus topics. Instead, list the available matching courses with their Course Codes and titles, and ask the student to specify which course they want the syllabus for.
 
 Context:
 {context}
 
-Question: {question}
+{history_block}Question: {question}
 
 Answer:
 """
@@ -522,28 +572,34 @@ Answer:
                 timeout=120.0
             )
             response.raise_for_status()
-            # Return the generated text string
             return response.json().get("response", "I could not generate an answer.")
     except Exception as e:
         print(f"Ollama API Error: {e}")
-        # Graceful fallback: return the raw retrieved context directly from Neo4j/PostgreSQL
         return f"ℹ️ *(Note: AI reformatting timed out. Showing direct database search results below)*\n\n{context}"
 
-async def generate_answer_stream(question: str, context: str):
+
+async def generate_answer_stream(question: str, context: str, history: list[dict] = None):
     """
-    Streams the AI response chunk by chunk as it generates.
+    Streams the AI response chunk by chunk as it generates, with conversational memory.
     """
+    history_block = _format_history_block(history)
     prompt = f"""
 You are CurriculumLens, an academic AI assistant for university students.
-Answer the student's question using ONLY the information provided in the Context below.
+Answer the student's question using ONLY the information provided in the Context and Conversation History below.
 If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
+If the student refers to previous topics or questions using pronouns (like 'it', 'its', 'that', or 'the previous algorithm'), use the Conversation History to resolve what they are asking about.
+
+SYLLABUS & CURRICULUM RULES:
+1. EXACT MATCH: If the Context provides the syllabus for an exact matched course, output ONLY that course's syllabus. Clearly display the Course Code and Course Name as the heading.
+2. ASCENDING ORDER: You MUST present all Units in STRICT ASCENDING NUMERICAL ORDER (Unit 1, Unit 2, Unit 3, Unit 4, Unit 5...). Never jumble unit numbers, never repeat units, and never mix different courses together.
+3. MULTIPLE SIMILAR COURSES (NO EXACT MATCH): If the Context indicates that multiple similar courses exist (no single exact match), do NOT output full syllabus topics. Instead, list the available matching courses with their Course Codes and titles, and ask the student to specify which course they want the syllabus for.
 
 IMPORTANT: If the Context contains Markdown image links for diagrams (e.g. `![Diagram for ...](http://...)`), you MUST include EVERY Markdown image link directly under its corresponding question in your final answer so the student can see the circuit/diagram images.
 
 Context:
 {context}
 
-Question: {question}
+{history_block}Question: {question}
 
 Answer:
 """
@@ -708,9 +764,8 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list):
                         """, t_name=t_name, c_code=c_code, subtopic=subtopic)
 
 
-# =============================================================================
-# 7. PYQ Structural Extraction and Mapping
-# =============================================================================
+_vision_semaphore = asyncio.Semaphore(1)
+
 async def extract_pyq_questions(base64_image: str) -> list[dict]:
     prompt = """
 You are an expert at extracting exam questions from PYQ (Past Year Question) pages.
@@ -732,84 +787,90 @@ Return ONLY a JSON object with this exact format:
 }
 If no questions are found, return {"questions": []}. No markdown, no explanation.
 """
-    try:
-        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
-            response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "images": [base64_image],
-                    "format": "json",
-                    "stream": False,
-                    "options": {
-                        "num_ctx": 8192,
-                        "num_predict": 4096
-                    }
-                },
-                timeout=180.0
-            )
-            response.raise_for_status()
-            res_text = response.json().get("response", "{}")
-            
-            # Robust JSON extraction to handle markdown, control characters, and invalid JSON escaping
-            import re
-            
-            def is_valid_question(q_text: str) -> bool:
-                if not q_text or len(q_text) < 20:
-                    return False
-                lower_text = q_text.lower()
-                junk_patterns = [
-                    r'^answer all', r'^part [a-z]', r'^section [a-z]',
-                    r'maximum marks', r'^time:', r'q\.p\. code',
-                    r'^\d+\s*x\s*\d+\s*=\s*\d+', r'^[a-z]\)'
-                ]
-                for pattern in junk_patterns:
-                    if re.search(pattern, lower_text):
-                        return False
-                return True
+    import re
 
-            match = re.search(r'\{.*\}', res_text, re.DOTALL)
-            clean_text = match.group(0) if match else res_text
-            
+    def is_valid_question(q_text: str) -> bool:
+        if not q_text or len(q_text) < 20:
+            return False
+        lower_text = q_text.lower()
+        junk_patterns = [
+            r'^answer all', r'^part [a-z]', r'^section [a-z]',
+            r'maximum marks', r'^time:', r'q\.p\. code',
+            r'^\d+\s*x\s*\d+\s*=\s*\d+', r'^[a-z]\)'
+        ]
+        for pattern in junk_patterns:
+            if re.search(pattern, lower_text):
+                return False
+        return True
+
+    async with _vision_semaphore:
+        for attempt in range(3):
             try:
-                data = json.loads(clean_text)
-                if isinstance(data, dict) and "questions" in data:
-                    return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
-            except Exception:
-                pass
+                async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
+                    response = await client.post(
+                        f"{OLLAMA_BASE_URL}/api/generate",
+                        json={
+                            "model": OLLAMA_MODEL,
+                            "prompt": prompt,
+                            "images": [base64_image],
+                            "format": "json",
+                            "stream": False,
+                            "options": {
+                                "num_ctx": 8192,
+                                "num_predict": 4096
+                            }
+                        },
+                        timeout=180.0
+                    )
+                    response.raise_for_status()
+                    res_text = response.json().get("response", "{}")
 
-            # Sanitize control characters (e.g. \u001e)
-            try:
-                sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_text)
-                data = json.loads(sanitized)
-                if isinstance(data, dict) and "questions" in data:
-                    return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
-            except Exception:
-                pass
+                    match = re.search(r'\{.*\}', res_text, re.DOTALL)
+                    clean_text = match.group(0) if match else res_text
 
-            # Regex fallback: extract "text": "..." fields directly
-            extracted = []
-            text_matches = re.findall(r'"text"\s*:\s*"([^"]+)"', clean_text)
-            for q_t in text_matches:
-                if is_valid_question(q_t):
-                    extracted.append({"question_number": "PYQ", "text": q_t, "likely_topic": "General", "implicit_formulas": []})
-            if extracted:
-                return extracted
+                    try:
+                        data = json.loads(clean_text)
+                        if isinstance(data, dict) and "questions" in data:
+                            return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
+                    except Exception:
+                        pass
 
-            # Final fallback: return clean text instead of raw JSON string, but only if it looks like a valid question
-            clean_human_text = re.sub(r'[{}"\[\]]', '', clean_text).strip()
-            if is_valid_question(clean_human_text):
-                return [{"question_number": "PYQ", "text": clean_human_text, "likely_topic": "General", "implicit_formulas": []}]
-            else:
+                    # Sanitize control characters (e.g. \u001e)
+                    try:
+                        sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_text)
+                        data = json.loads(sanitized)
+                        if isinstance(data, dict) and "questions" in data:
+                            return [q for q in data["questions"] if is_valid_question(q.get("text", ""))]
+                    except Exception:
+                        pass
+
+                    # Regex fallback: extract "text": "..." fields directly
+                    extracted = []
+                    text_matches = re.findall(r'"text"\s*:\s*"([^"]+)"', clean_text)
+                    for q_t in text_matches:
+                        if is_valid_question(q_t):
+                            extracted.append({"question_number": "PYQ", "text": q_t, "likely_topic": "General", "implicit_formulas": []})
+                    if extracted:
+                        return extracted
+
+                    # Final fallback
+                    clean_human_text = re.sub(r'[{}"\[\]]', '', clean_text).strip()
+                    if is_valid_question(clean_human_text):
+                        return [{"question_number": "PYQ", "text": clean_human_text, "likely_topic": "General", "implicit_formulas": []}]
+                    return []
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 403:
+                    wait = 15
+                    print(f"[Ollama Vision] Rate-limited (403). Waiting {wait}s before retry {attempt+1}/3...")
+                    await asyncio.sleep(wait)
+                else:
+                    print(f"[Ollama Vision Error] HTTP {e.response.status_code}: {e.response.text}")
+                    return []
+            except Exception as e:
+                import traceback
+                print(f"[Ollama Vision Error] Failed to extract PYQ questions: {type(e).__name__} - {e}")
                 return []
-
-    except httpx.HTTPStatusError as e:
-        print(f"[Ollama Vision Error] HTTP {e.response.status_code}: {e.response.text}")
-        return []
-    except Exception as e:
-        import traceback
-        print(f"[Ollama Vision Error] Failed to extract PYQ questions: {type(e).__name__} - {e}")
         return []
 
 def clean_formula_text(text: str) -> str:
@@ -959,11 +1020,11 @@ def extract_pyq_structured(file_path: str, course_code: str, document_id: str = 
     BTL_TAG_RE = re.compile(r'\[BTL\s*(\d+)\]', re.IGNORECASE)
     MARKS_RE   = re.compile(r'\[(\d+)\]|\((\d+)\s*[Mm]arks?\)', re.IGNORECASE)
     FIG_RE     = re.compile(r'\bFig\.?\s*\d+\b|\bfigure\b', re.IGNORECASE)
-    # TOP-LEVEL questions only: "1." "2." "10." "Q1." "Question 2."
-    # Sub-questions like "1a)", "(i)", "a)" are intentionally excluded so
+    # TOP-LEVEL questions: "1." "2." "10." "Q1." "Question 2." or "1)" "2)" "10)"
+    # Sub-questions like "1a)", "(i)", "a)" are excluded so
     # they are captured as part of the parent question text + crop.
     Q_NUM_RE   = re.compile(
-        r'^\s*((?:Q(?:uestion)?\s*)?\d{1,2})\.\s+',
+        r'^\s*((?:Q(?:uestion)?\s*)?\d{1,2})[\.\)]\s+',
         re.MULTILINE | re.IGNORECASE
     )
     SCALE = 2.0   # Render pages at 2x resolution for crisp crops
@@ -1089,6 +1150,8 @@ def extract_pyq_structured(file_path: str, course_code: str, document_id: str = 
                     px_ceiling = int(hard_ceiling_this_page * SCALE)
                     crop_top   = max(0, int((y_start_pdf - 10) * SCALE))
                     crop_bot   = min(part1_img.height, min(px_ceiling, int((y_end_pdf + 5) * SCALE)))
+                    if crop_bot <= crop_top:
+                        crop_bot = min(part1_img.height, crop_top + int(60 * SCALE))
                     part1_crop = part1_img.crop((0, crop_top, part1_img.width, crop_bot))
 
                     final_img = part1_crop

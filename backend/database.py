@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # PostgreSQL using Python classes instead of raw SQL queries.
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import Column, String, Text, DateTime
+from sqlalchemy import Column, String, Text, DateTime, Index
 from sqlalchemy.dialects.postgresql import UUID
 
 # pgvector is a PostgreSQL extension that allows us to store and search
@@ -35,7 +35,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'), o
 # Fetch database credentials from environment variables, providing safe defaults
 POSTGRES_USER     = os.getenv("POSTGRES_USER",     "cluser")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "clpassword")
-POSTGRES_HOST     = os.getenv("POSTGRES_HOST",     "localhost")
+POSTGRES_HOST     = os.getenv("POSTGRES_HOST",     "127.0.0.1")
 POSTGRES_PORT     = os.getenv("POSTGRES_PORT",     "5434")
 POSTGRES_DB       = os.getenv("POSTGRES_DB",       "curriculumlens")
 
@@ -112,6 +112,18 @@ class DocumentChunk(Base):
     # The vector embedding representing the semantic meaning of the text content.
     # The dimension is 768 to perfectly match the output of the 'nomic-embed-text' model.
     embedding   = Column(Vector(768), nullable=True)
+
+    # Fast Approximate Nearest Neighbor (ANN) index for vector similarity search
+    # We use vector_cosine_ops for cosine similarity matching
+    __table_args__ = (
+        Index(
+            'ix_document_chunks_embedding_hnsw',
+            embedding,
+            postgresql_using='hnsw',
+            postgresql_with={'m': 16, 'ef_construction': 64},
+            postgresql_ops={'embedding': 'vector_cosine_ops'}
+        ),
+    )
 
 
 class ProcessingReport(Base):

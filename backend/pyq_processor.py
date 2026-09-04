@@ -68,12 +68,16 @@ class PYQProcessingReport:
         return cls(**d)
 
     def finalize(self):
-        """Set the final status based on collected counts."""
-        if self.saved_neo4j == 0:
+        """
+        Set the final status based on topic mapping success:
+        - failed: 0 questions saved or 0 questions mapped to topics.
+        - partial: missed more than half of the total available questions in topic mapping.
+        - completed: successfully mapped at least half or more of the questions to topics in Neo4j.
+        """
+        total = self.saved_neo4j
+        if total == 0 or self.mapped_to_topic == 0:
             self.status = "failed"
-        elif (self.skipped > 0
-              or self.embedded_postgres < self.saved_neo4j
-              or self.mapped_to_co < self.saved_neo4j):
+        elif self.mapped_to_topic < (total / 2.0):
             self.status = "partially_completed"
         else:
             self.status = "completed"

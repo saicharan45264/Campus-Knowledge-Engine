@@ -76,14 +76,15 @@ EDITION_RE = re.compile(r'\b(Edition|ISBN|Vol\.?|Volume|Press|Publisher|PHI|TMH|
 # Pydantic model for LLM response validation
 # ---------------------------------------------------------------------------
 
-class TopicExtractionResult(BaseModel):
-    topics: list[str]
-    extraction_notes: str = ""
+class TopicItem(BaseModel):
+    name: str
+    bloom_level: str = "L1"
+    prerequisite_of: list[str] = []
+    part_of: list[str] = []
 
-    @field_validator("topics")
-    @classmethod
-    def topics_must_be_strings(cls, v):
-        return [str(t).strip() for t in v if t and str(t).strip()]
+class TopicList(BaseModel):
+    topics: list[TopicItem]
+    extraction_notes: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -271,33 +272,39 @@ def _is_ambiguous(topics: list[str], unit_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — LLM fallback for ambiguous units
+# Step 4 — LLM Verification & Enrichment
 # ---------------------------------------------------------------------------
 
-async def _extract_topics_llm(unit_text: str, course_code: str, unit_num: int) -> TopicExtractionResult:
+async def _verify_and_enrich_topics_llm(unit_text: str, course_code: str, unit_num: int, extracted_topics: list[str]) -> TopicList:
     """
-    Sends the unit's raw syllabus text to the LLM and asks for a structured
-    JSON list of topic names. LLM-derived topics are always set approved=False
-    and require admin approval before being used for PYQ mapping.
+    Sends the regex-extracted topics + raw syllabus text to the LLM to:
+    1. Verify and clean the topics (fix over-splitting, missing terms).
+    2. Infer Bloom's Taxonomy Level (L1-L6) for each topic.
+    3. Infer PREREQUISITE_OF and PART_OF relationships between topics in this unit.
     """
+    topics_str = "\n".join(f"- {t}" for t in extracted_topics)
     prompt = f"""You are an expert academic curriculum analyst.
 
-Below is the raw syllabus text for Unit {unit_num} of course {course_code}.
-Extract ONLY the distinct academic topic names actually present in this text.
+Below is the raw syllabus text for Unit {unit_num} of course {course_code}, and a draft list of topics extracted by a simple script.
+Verify, clean, and enrich this list.
 
 Rules:
-- Return each topic exactly as it appears (preserve hyphens and multi-word phrases).
-- Do NOT invent topics not in the text.
-- Do NOT include textbook titles, author names, publication years, edition numbers,
-  publisher names, evaluation criteria, CO mappings, or any non-topic content.
-- Preserve meaningful multi-word concepts (e.g., "Non-Deterministic Finite State Machine").
-- Each topic should be a standalone academic concept, not a sentence fragment.
+- Remove noise (textbooks, evaluation criteria, publication years, lone numbers).
+- Fix split phrases (e.g. if the script split "Context-Free Grammars" into "Context-Free" and "Grammars").
+- Assign a Bloom's Taxonomy Level (L1-L6) to each topic based on how it's taught. L1=Remember, L2=Understand, L3=Apply, L4=Analyze, L5=Evaluate, L6=Create.
+- Identify relationships BETWEEN the topics in this unit:
+  - If Topic A must be learned before Topic B, add "Topic B" to Topic A's `prerequisite_of` list.
+  - If Topic A is a sub-topic or component of Topic B, add "Topic B" to Topic A's `part_of` list.
+- Only reference topics that exist in your final output list.
 
 Syllabus text:
 {unit_text}
 
+Draft extracted topics:
+{topics_str}
+
 Return ONLY valid JSON with this exact structure:
-{{"topics": ["Topic A", "Topic B", ...], "extraction_notes": "brief note"}}
+{{"topics": [{{"name": "Topic A", "bloom_level": "L2", "prerequisite_of": ["Topic B"], "part_of": []}}], "extraction_notes": "..."}}
 """
     try:
         async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
@@ -310,15 +317,26 @@ Return ONLY valid JSON with this exact structure:
                     "format": "json",
                     "options": {"num_ctx": 4096}
                 },
-                timeout=90.0
+                timeout=120.0
             )
             response.raise_for_status()
             raw = response.json().get("response", "{}")
-            data = json.loads(raw)
-            return TopicExtractionResult(**data)
+            raw_clean = raw.strip()
+            if raw_clean.startswith("```json"):
+                raw_clean = raw_clean[7:]
+            elif raw_clean.startswith("```"):
+                raw_clean = raw_clean[3:]
+            if raw_clean.endswith("```"):
+                raw_clean = raw_clean[:-3]
+            raw_clean = raw_clean.strip()
+            
+            data = json.loads(raw_clean)
+            return TopicList(**data)
     except Exception as e:
-        print(f"[CurriculumExtractor] LLM fallback failed for unit {unit_num}: {e}")
-        return TopicExtractionResult(topics=[], extraction_notes=f"LLM error: {e}")
+        print(f"[CurriculumExtractor] LLM verification failed for unit {unit_num}: {repr(e)}")
+        # Fallback to the original extracted topics without enrichment
+        fallback_topics = [TopicItem(name=t, bloom_level="L1") for t in extracted_topics if _is_valid_topic(t)]
+        return TopicList(topics=fallback_topics, extraction_notes=f"LLM error fallback: {repr(e)}")
 
 
 # ---------------------------------------------------------------------------
@@ -422,34 +440,40 @@ async def extract_syllabus_structure(
         for unit in units:
             raw_text = unit["raw_text"]
 
-            # Deterministic extraction first
-            topics = _extract_topics_deterministic(raw_text)
-            method = "regex"
-            confidence = 1.0
-            approved = True
+            # Pass 1: Deterministic extraction
+            draft_topics = _extract_topics_deterministic(raw_text)
 
-            if _is_ambiguous(topics, raw_text):
-                print(f"[CurriculumExtractor]   {code} Unit {unit['number']}: ambiguous — calling LLM fallback.")
-                llm_result = await _extract_topics_llm(raw_text, code, unit["number"])
-                if llm_result.topics:
-                    # Validate each LLM topic
-                    llm_topics = [t for t in llm_result.topics if _is_valid_topic(t)]
-                    if llm_topics:
-                        topics = llm_topics
-                        method = "llm_validated"
-                        confidence = 0.85
-                        approved = False   # Always False for LLM-derived topics
-                        print(f"[CurriculumExtractor]     LLM produced {len(topics)} topics (pending admin approval).")
-
-            topic_dicts = []
-            for t_name in topics:
-                topic_dicts.append({
-                    "name":                 t_name,
-                    "normalized_name":      re.sub(r'\s+', ' ', t_name.lower().strip()),
-                    "extraction_method":    method,
-                    "extraction_confidence": confidence,
-                    "approved":             approved,
-                })
+            # Pass 2: Selective LLM Fallback & Verification
+            if _is_ambiguous(draft_topics, raw_text):
+                print(f"[CurriculumExtractor]   {code} Unit {unit['number']}: ambiguous/empty, verifying via LLM...")
+                llm_result = await _verify_and_enrich_topics_llm(raw_text, code, unit["number"], draft_topics)
+                
+                topic_dicts = []
+                for t_item in llm_result.topics:
+                    if _is_valid_topic(t_item.name):
+                        topic_dicts.append({
+                            "name":                 t_item.name,
+                            "normalized_name":      re.sub(r'\s+', ' ', t_item.name.lower().strip()),
+                            "bloom_level":          t_item.bloom_level,
+                            "prerequisite_of":      t_item.prerequisite_of,
+                            "part_of":              t_item.part_of,
+                            "extraction_method":    "llm_verified",
+                            "extraction_confidence": 0.85,
+                            "approved":             False,
+                        })
+            else:
+                topic_dicts = []
+                for t_name in draft_topics:
+                    topic_dicts.append({
+                        "name":                 t_name,
+                        "normalized_name":      re.sub(r'\s+', ' ', t_name.lower().strip()),
+                        "bloom_level":          "L1",
+                        "prerequisite_of":      [],
+                        "part_of":              [],
+                        "extraction_method":    "regex",
+                        "extraction_confidence": 1.0,
+                        "approved":             True,
+                    })
 
             units_data.append({
                 "number":   unit["number"],
@@ -552,12 +576,14 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list,
                 """, unit_id=unit_id, u_num=u_num, u_title=u_title,
                     u_raw=u_raw, c_code=c_code, doc_id=doc_id)
 
+                # First pass: create Topic nodes
                 for topic in unit.get("topics", []):
                     t_name  = topic.get("name", "")
                     t_norm  = topic.get("normalized_name", t_name.lower().strip())
                     t_meth  = topic.get("extraction_method", "regex")
                     t_conf  = topic.get("extraction_confidence", 1.0)
                     t_appr  = topic.get("approved", True)
+                    t_bloom = topic.get("bloom_level", "L1")
                     if not t_name:
                         continue
 
@@ -575,13 +601,36 @@ def build_syllabus_kg(neo4j_driver, dept: str, year: str, courses: list,
                             t.extraction_method = $t_meth,
                             t.extraction_confidence = $t_conf,
                             t.approved = $t_appr,
+                            t.bloom_level = $t_bloom,
                             t.created_at = $now
+                        ON MATCH SET
+                            t.bloom_level = $t_bloom
                         WITH t
                         MATCH (u:Unit {id: $unit_id})
                         MERGE (u)-[:HAS_TOPIC]->(t)
                     """, t_id=t_id, t_name=t_name, t_norm=t_norm,
                         u_raw=u_raw, doc_id=doc_id, c_code=c_code,
                         u_num=u_num, t_meth=t_meth, t_conf=t_conf,
-                        t_appr=t_appr, now=now_iso, unit_id=unit_id)
+                        t_appr=t_appr, t_bloom=t_bloom, now=now_iso, unit_id=unit_id)
+
+                # Second pass: create relationships
+                for topic in unit.get("topics", []):
+                    t_name = topic.get("name", "")
+                    if not t_name: continue
+                    t_id = _topic_id(c_code, int(u_num), t_name, doc_id)
+                    
+                    for prereq_of_name in topic.get("prerequisite_of", []):
+                        target_id = _topic_id(c_code, int(u_num), prereq_of_name, doc_id)
+                        session.run("""
+                            MATCH (a:Topic {id: $t_id}), (b:Topic {id: $target_id})
+                            MERGE (a)-[:PREREQUISITE_OF]->(b)
+                        """, t_id=t_id, target_id=target_id)
+                        
+                    for part_of_name in topic.get("part_of", []):
+                        target_id = _topic_id(c_code, int(u_num), part_of_name, doc_id)
+                        session.run("""
+                            MATCH (a:Topic {id: $t_id}), (b:Topic {id: $target_id})
+                            MERGE (a)-[:PART_OF]->(b)
+                        """, t_id=t_id, target_id=target_id)
 
     print(f"[CurriculumExtractor] Neo4j write complete for {len(courses)} courses.")

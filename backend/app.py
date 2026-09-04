@@ -5,7 +5,7 @@ import shutil
 from datetime import datetime, timedelta
 
 # FastAPI is the core framework used to build our web API
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks, Response
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks, Response, Header
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jose import jwt
@@ -29,7 +29,8 @@ from utils import (
     extract_pyq_questions, map_questions_to_kg, clean_formula_text,
     extract_pyq_structured, add_prerequisite_edges, PREREQUISITE_MAP, map_pyq_structured_to_kg,
     hybrid_search_rrf, execute_neo4j_pyq_search, upload_question_image_to_cloudinary,
-    delete_document_images_from_cloudinary, delete_all_images_from_cloudinary
+    delete_document_images_from_cloudinary, delete_all_images_from_cloudinary,
+    rewrite_query_with_llm
 )
 
 # --- New focused modules (Graph RAG pipeline) ---
@@ -222,57 +223,7 @@ async def get_evaluation():
 
 import httpx
 from utils import OLLAMA_BASE_URL, OLLAMA_MODEL
-
-async def classify_query_intent(question: str) -> str:
-    """
-    Tiered classification: Fast keyword pre-filter first. 
-    If ambiguous, invoke the LLM classifier.
-    """
-    q_lower = question.lower()
-    
-    # Tier 1: Fast Keyword Routing
-    # Check for problem list requests first
-    if any(marker in q_lower for marker in ["problems on", "problem on", "questions on", "question on", "pyqs on", "pyq on", "problems about", "questions about"]):
-        return "PROBLEM_LIST"
-        
-    if any(k in q_lower for k in ["prerequisite", "before taking", "should i know", "requires", "needed for"]):
-        return "MULTI_HOP_PREREQ"
-    elif any(k in q_lower for k in ["btl", "co1", "co2", "co3", "co4", "co5", "bloom", "mapped to", "course outcome questions"]):
-        return "GRAPH_PYQ_MAPPING"
-    elif any(k in q_lower for k in ["syllabus", "topics", "units", "course outcomes", "objectives"]):
-        return "SIMPLE_CURRICULUM"
-    elif any(k in q_lower for k in ["question", "questions", "pyq", "past year", "exam", "paper", "midterm", "mid-term", "endsem", "end-sem", "problem", "problems", "circuit"]):
-        return "SIMPLE_PYQ"
-        
-    # Tier 2: LLM Fallback (Slow)
-    prompt = f"""
-You are a query classification engine for a university information system.
-Classify the user's question into exactly one primary category.
-
-Categories:
-- "PROBLEM_LIST": Questions asking for problem sets, practice problems, or exam questions on a specific academic topic (e.g. "problems on superposition theorem").
-- "SIMPLE_CURRICULUM": Questions about courses, syllabus content, units, topics, learning outcomes.
-- "SIMPLE_PYQ": Questions asking for a specific, single past year question (e.g., "what is question 5 of course EEE104?").
-- "MULTI_HOP_PREREQ": Questions asking about course prerequisites or what to know before taking a course.
-- "GRAPH_PYQ_MAPPING": Questions asking for questions mapped to specific Course Outcomes (COs) or Bloom's Taxonomy Levels (BTLs).
-
-Return ONLY the category name. No explanations.
-Question: {question}
-"""
-    try:
-        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
-            response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-                timeout=25.0
-            )
-            ans = response.json().get("response", "").strip().upper()
-            if ans in ["SIMPLE_CURRICULUM", "SIMPLE_PYQ", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING", "PROBLEM_LIST"]:
-                return ans
-    except Exception as e:
-        print(f"LLM classification error: {type(e).__name__}: {e}")
-        
-    return "SIMPLE_CURRICULUM" # Default fallback
+from intent_router import classify_query_intent
 
 
 def execute_graph_prereq_query(neo4j_driver, question: str) -> list:
@@ -309,33 +260,91 @@ def execute_graph_co_query(neo4j_driver, question: str) -> list:
     return records
 
 
-def execute_graph_syllabus_query(neo4j_driver, question: str) -> list:
-    """Queries Neo4j for course syllabus structure (Units & Topics)."""
-    words = [w.strip(".,!?-'\"") for w in question.lower().split() if len(w) > 2 and w not in ["get", "me", "the", "syllabus", "for", "course", "topics", "units", "what", "is"]]
-    if not words:
-        words = [question.lower()]
-        
+def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
+    """
+    Queries Neo4j for course syllabus structure (Units & Topics).
+    Distinguishes between:
+      1. EXACT MATCH: Returns ONLY that course with its Units strictly sorted in ascending order (Unit 1, Unit 2, Unit 3...).
+      2. SIMILAR MATCHES: When no exact match exists, returns a list of candidate courses so the student can pick.
+    """
+    stop_words = {
+        "get", "me", "the", "syllabus", "for", "course", "topics", "units", "unit",
+        "what", "is", "give", "show", "list", "provide", "all", "of", "about", "in", "please"
+    }
+    words = [w.strip(".,!?-'\"") for w in question.lower().split() if len(w) > 1 and w.lower() not in stop_words]
+    search_phrase = " ".join(words).strip()
+    
     with neo4j_driver.session() as session:
-        # First try matching course name or course code directly
-        records = session.run("""
-            MATCH (c:Course)
-            WHERE all(word IN $words WHERE toLower(c.name) CONTAINS word OR toLower(c.code) CONTAINS word)
-            OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-            RETURN c.code as course_code, c.name as course_name, u.title as unit_title, collect(DISTINCT t.name) as topics
-            ORDER BY size(c.name) ASC
+        # Step 1: Check for an EXACT match on course code or full course name
+        if search_phrase:
+            exact_records = session.run("""
+                MATCH (c:Course)
+                WHERE toLower(c.code) = toLower($sp) OR toLower(c.name) = toLower($sp)
+                OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)
+                OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                WITH c, u, collect(DISTINCT t.name) as raw_topics
+                WITH c, u.number as unit_num, coalesce(u.title, "Unit " + u.number) as unit_title, 
+                     [x IN raw_topics WHERE x IS NOT NULL AND size(x) > 0] as topics
+                WHERE size(topics) > 0
+                RETURN c.code as course_code, c.name as course_name, 
+                       toInteger(unit_num) as unit_number, unit_title, topics
+                ORDER BY unit_number ASC
+            """, sp=search_phrase).data()
+
+            if exact_records:
+                return {"match_type": "exact", "records": exact_records}
+
+        # Step 2: If no exact match, find candidate courses by keywords
+        if words:
+            matching_courses = session.run("""
+                MATCH (c:Course)
+                WHERE all(word IN $words WHERE toLower(c.name) CONTAINS word OR toLower(c.code) CONTAINS word)
+                RETURN c.code as course_code, c.name as course_name
+                ORDER BY size(c.name) ASC
+                LIMIT 10
+            """, words=words).data()
+        else:
+            matching_courses = []
+
+        # If exactly 1 course matched by keywords, treat it as an exact match!
+        if len(matching_courses) == 1:
+            c_code = matching_courses[0]["course_code"]
+            single_records = session.run("""
+                MATCH (c:Course {code: $c_code})-[:HAS_UNIT]->(u:Unit)
+                OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                WITH c, u, collect(DISTINCT t.name) as raw_topics
+                WITH c, u.number as unit_num, coalesce(u.title, "Unit " + u.number) as unit_title, 
+                     [x IN raw_topics WHERE x IS NOT NULL AND size(x) > 0] as topics
+                WHERE size(topics) > 0
+                RETURN c.code as course_code, c.name as course_name, 
+                       toInteger(unit_num) as unit_number, unit_title, topics
+                ORDER BY unit_number ASC
+            """, c_code=c_code).data()
+            if single_records:
+                return {"match_type": "exact", "records": single_records}
+
+        # If multiple courses matched, return them as candidates (no exact match)
+        if len(matching_courses) > 1:
+            return {"match_type": "similar_list", "courses": matching_courses}
+
+        # Step 3: Fallback: Topic-level match
+        topic_records = session.run("""
+            MATCH (c:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+            WHERE all(word IN $words WHERE toLower(t.name) CONTAINS word)
+            WITH c, u, collect(DISTINCT t.name) as raw_topics
+            WITH c, u.number as unit_num, coalesce(u.title, "Unit " + u.number) as unit_title, 
+                 [x IN raw_topics WHERE x IS NOT NULL AND size(x) > 0] as topics
+            WHERE size(topics) > 0
+            RETURN c.code as course_code, c.name as course_name, 
+                   toInteger(unit_num) as unit_number, unit_title, topics
+            ORDER BY c.code, unit_number ASC
             LIMIT 15
         """, words=words).data()
-        
-        # If no course name matches all words, fallback to topic-level search
-        if not records:
-            records = session.run("""
-                MATCH (c:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-                WHERE all(word IN $words WHERE toLower(t.name) CONTAINS word)
-                RETURN c.code as course_code, c.name as course_name, u.title as unit_title, collect(DISTINCT t.name) as topics
-                LIMIT 15
-            """, words=words).data()
-            
-    return records
+
+        if topic_records:
+            return {"match_type": "exact", "records": topic_records}
+
+    return {"match_type": "none", "records": []}
 
 
 class ChatRequest(BaseModel):
@@ -347,9 +356,39 @@ import asyncio
 from functools import lru_cache
 import time
 
+_pyq_semaphore = asyncio.Semaphore(1)  # only 1 PYQ task at a time
+
+
+from collections import defaultdict
+
 # Simple in-memory cache for recent chat responses
 _chat_cache = {}
 _CACHE_TTL = 300  # 5 minutes
+
+# Multi-turn Conversational Memory per session_id
+_session_history = defaultdict(list)
+_session_last_active = {}
+MAX_HISTORY_TURNS = 6  # Last 3 user + 3 assistant turns
+
+def get_session_history(session_id: Optional[str]) -> list[dict]:
+    """Retrieve sliding-window conversation history for a given session."""
+    if not session_id:
+        return []
+    now = time.time()
+    # Expire sessions inactive for more than 2 hours
+    if session_id in _session_last_active and (now - _session_last_active[session_id] > 7200):
+        _session_history[session_id] = []
+    _session_last_active[session_id] = now
+    return list(_session_history[session_id][-MAX_HISTORY_TURNS:])
+
+def append_session_message(session_id: Optional[str], role: str, content: str):
+    """Appends a message to the session's conversation history."""
+    if not session_id or not content.strip():
+        return
+    _session_history[session_id].append({"role": role, "content": content.strip()})
+    _session_last_active[session_id] = time.time()
+    if len(_session_history[session_id]) > MAX_HISTORY_TURNS:
+        _session_history[session_id] = _session_history[session_id][-MAX_HISTORY_TURNS:]
 
 def _get_cached_response(key):
     if key in _chat_cache:
@@ -361,18 +400,25 @@ def _get_cached_response(key):
 
 def _set_cache(key, val):
     _chat_cache[key] = (val, time.time())
-    # Evict old entries if cache grows too large
     if len(_chat_cache) > 100:
         oldest = min(_chat_cache, key=lambda k: _chat_cache[k][1])
         del _chat_cache[oldest]
 
 
-def extract_topic_from_query(question: str) -> str:
-    """Extract the topic from the user query."""
+def extract_topic_from_query(question: str, history: list = None) -> str:
+    """Extract the topic from the user query, resolving pronouns/references from history."""
     q_lower = question.lower()
     
+    referential_phrases = ["that topic", "this topic", "the topic", "same topic", "that algorithm", "this algorithm", "that concept", "this concept"]
+    if any(ref in q_lower for ref in referential_phrases) and history:
+        last_user_msg = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        if last_user_msg:
+            return extract_topic_from_query(last_user_msg, None)
+
     # Try common markers
     markers = [
+        "previous year question papers on", "previous year questions on",
+        "question papers on", "question paper on", "papers on",
         "problems on", "problem on", "questions on", "question on", 
         "pyqs on", "pyq on", "problems about", "questions about", 
         "questions for", "problems for", "find questions on", "find problems on"
@@ -382,6 +428,10 @@ def extract_topic_from_query(question: str) -> str:
             idx = q_lower.find(marker)
             extracted = question[idx + len(marker):].strip("? .!").strip()
             if extracted:
+                if any(ref in extracted.lower() for ref in referential_phrases) and history:
+                    last_user_msg = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+                    if last_user_msg:
+                        return extract_topic_from_query(last_user_msg, None)
                 return extracted.title()
                 
     # Fallback: remove stop words and return the remaining words capitalized
@@ -389,7 +439,7 @@ def extract_topic_from_query(question: str) -> str:
         "get", "me", "a", "the", "all", "questions", "question", "problems", "problem",
         "pyqs", "pyq", "on", "about", "for", "find", "show", "list", "give", "related",
         "are", "there", "any", "is", "what", "how", "why", "who", "where", "can", "you",
-        "tell", "explain", "describe", "provide", "please", "past", "year"
+        "tell", "explain", "describe", "provide", "please", "past", "year", "papers", "paper"
     }
     words = question.split()
     clean_words = []
@@ -408,10 +458,24 @@ def extract_topic_from_query(question: str) -> str:
 async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
     Takes a student's question, uses tiered intent routing, searches 
-    PostgreSQL/Neo4j for relevant context, and streams the AI response back.
+    PostgreSQL/Neo4j for relevant context, and streams the AI response back
+    with multi-turn conversational memory.
     """
     question = request.message
-    cache_key = question.strip().lower()
+    session_id = request.session_id or "default_session"
+    history = get_session_history(session_id)
+
+    # Contextual query expansion using LLM to handle follow-ups robustly
+    search_query = question
+    if history:
+        # e.g., History: "get me syllabus for machine learning" -> Current: "get me unit 2 alone"
+        # Rewrites to: "get me unit 2 of the machine learning syllabus"
+        search_query = await rewrite_query_with_llm(question, history)
+        if search_query != question:
+            print(f"[ROUTER] Rewrote follow-up query to: '{search_query}'")
+
+    # Cache key considers session so multi-turn chats don't collide with single-shot queries
+    cache_key = f"{session_id}:{question.strip().lower()}" if history else question.strip().lower()
 
     # --- Check cache first ---
     cached = _get_cached_response(cache_key)
@@ -422,44 +486,59 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
 
     context_parts = []
     
-    intent = await classify_query_intent(question)
-    print(f"[ROUTER] Intent classified as: {intent}")
+    intent = await classify_query_intent(search_query)
+    print(f"[ROUTER] Intent classified as: {intent} (search_query='{search_query}')")
     
     neo4j_driver = get_neo4j()
     
-    if intent == "PROBLEM_LIST":
-        topic_name = extract_topic_from_query(question)
+    is_problem_list = (
+        intent == "PROBLEM_LIST" 
+        or any(phrase in search_query.lower() for phrase in [
+            "problems on", "questions on", "pyqs on", "pyq on", "question papers on", 
+            "previous year question", "questions about", "problems about", "papers on"
+        ])
+    )
+
+    if is_problem_list:
+        topic_name = extract_topic_from_query(question, history=history)
+        if not topic_name and search_query != question:
+            topic_name = extract_topic_from_query(search_query, None)
+            
+        print(f"[ROUTER] Problem list requested for topic: '{topic_name}'")
         t_intent_start = time.time()
 
         # ── Graph RAG path: TESTS_TOPIC traversal first ─────────────────────
-        problems = fetch_problems_by_topic_graph(neo4j_driver, topic_name)
+        problems = await fetch_problems_by_topic_graph(neo4j_driver, topic_name) if topic_name else []
         used_graph = bool(problems)
         print(f"[ROUTER] PROBLEM_LIST graph path: {len(problems)} results for '{topic_name}'")
 
         # ── Keyword fallback: only if graph returned nothing ─────────────────
-        if not problems:
+        if not problems and topic_name:
             print(f"[ROUTER] PROBLEM_LIST graph empty — falling back to keyword search.")
             problems = fetch_all_problems_by_topic(neo4j_driver, topic_name)
 
-        return JSONResponse(
-            content={
-                "type":       "problem_list",
-                "topic":      topic_name,
-                "problems":   problems,
-                "source":     "graph" if used_graph else "keyword_fallback",
-            },
-            headers={"X-Response-Type": "problem_list"},
-        )
+        if problems:
+            append_session_message(session_id, "user", question)
+            append_session_message(session_id, "assistant", f"Found {len(problems)} questions on {topic_name}.")
+            return JSONResponse(
+                content={
+                    "type":       "problem_list",
+                    "topic":      topic_name,
+                    "problems":   problems,
+                    "source":     "graph" if used_graph else "keyword_fallback",
+                },
+                headers={"X-Response-Type": "problem_list"},
+            )
         
-    elif intent == "MULTI_HOP_PREREQ":
-        records = execute_graph_prereq_query(neo4j_driver, question)
+    if intent == "MULTI_HOP_PREREQ":
+        records = execute_graph_prereq_query(neo4j_driver, search_query)
         if records:
             context_parts.append("--- PREREQUISITE GRAPH KNOWLEDGE ---")
             for r in records:
                 context_parts.append(f"Course: {r['course']} requires prerequisites: {', '.join(r['all_prerequisites'])}")
     
     elif intent == "GRAPH_PYQ_MAPPING":
-        records = execute_graph_co_query(neo4j_driver, question)
+        records = execute_graph_co_query(neo4j_driver, search_query)
         if records:
             context_parts.append("--- MAPPED QUESTIONS GRAPH KNOWLEDGE ---")
             for r in records:
@@ -467,35 +546,49 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 
     elif intent == "SIMPLE_CURRICULUM":
         t_graph_start = time.time()
-        records = execute_graph_syllabus_query(neo4j_driver, question)
+        syllabus_res = execute_graph_syllabus_query(neo4j_driver, search_query)
         t_graph_ms = round((time.time() - t_graph_start) * 1000)
 
-        if records:
-            context_parts.append("--- SYLLABUS & CURRICULUM KNOWLEDGE GRAPH ---")
-            syllabus_dict = {}
-            for r in records:
-                c_code = r['course_code']
-                if c_code not in syllabus_dict:
-                    syllabus_dict[c_code] = {"name": r['course_name'], "units": {}}
-                if r.get('unit_title') and r.get('topics'):
-                    syllabus_dict[c_code]["units"][r['unit_title']] = r['topics']
+        match_type = syllabus_res.get("match_type")
+        if match_type == "exact":
+            records = syllabus_res.get("records", [])
+            c_code = records[0]["course_code"]
+            c_name = records[0]["course_name"]
+            context_parts.append(f"--- EXACT MATCHED SYLLABUS: {c_code} - {c_name} ---")
+            context_parts.append(f"Course: {c_code} - {c_name}")
 
-            for c_code, data in syllabus_dict.items():
-                context_parts.append(f"Course: {c_code} - {data['name']}")
-                if data["units"]:
-                    for unit_title in sorted(data["units"].keys()):
-                        topics = data["units"][unit_title]
-                        topics_str = ", ".join(topics) if isinstance(topics, list) else str(topics)
-                        context_parts.append(f"  {unit_title}: {topics_str}")
+            # Group topics by unit number and sort strictly ascending
+            units_dict = {}
+            for r in records:
+                u_num = r.get("unit_number") or 999
+                u_title = r.get("unit_title") or f"Unit {u_num}"
+                topics = r.get("topics", [])
+                if u_num not in units_dict:
+                    units_dict[u_num] = {"title": u_title, "topics": list(topics)}
                 else:
-                    context_parts.append("  (No specific units or topics recorded for this course)")
+                    for t in topics:
+                        if t not in units_dict[u_num]["topics"]:
+                            units_dict[u_num]["topics"].append(t)
+
+            for u_num in sorted(units_dict.keys()):
+                u_info = units_dict[u_num]
+                topics_str = ", ".join(u_info["topics"])
+                context_parts.append(f"  Unit {u_num}: {topics_str}")
+
+        elif match_type == "similar_list":
+            courses = syllabus_res.get("courses", [])
+            context_parts.append("--- MULTIPLE SIMILAR COURSES FOUND (NO EXACT MATCH) ---")
+            context_parts.append("No single exact match was found. The curriculum contains these related courses:")
+            for c in courses:
+                context_parts.append(f"- {c['course_code']}: {c['course_name']}")
+            context_parts.append("List these matching courses for the student and ask which one they want the syllabus for.")
+
         else:
             # ── Fallback: only if Neo4j returned nothing ─────────────────────
-            # (e.g., course not yet uploaded, or question is asking for an explanation)
-            question_embedding = await get_embedding(question)
+            question_embedding = await get_embedding(search_query)
             if question_embedding:
                 try:
-                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                    chunks = await hybrid_search_rrf(db, search_query, question_embedding, k=5)
                     if chunks:
                         context_parts.append("--- ADDITIONAL TEXT CHUNKS ---")
                         for chunk in chunks:
@@ -506,9 +599,9 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                     print(f"Hybrid search error in /chat: {e}")
 
     else:
-        # SIMPLE_PYQ
+        # SIMPLE_PYQ / GENERAL
         neo4j_driver = get_neo4j()
-        neo4j_results = execute_neo4j_pyq_search(neo4j_driver, question)
+        neo4j_results = execute_neo4j_pyq_search(neo4j_driver, search_query)
         
         if neo4j_results:
             context_parts.append("--- NEO4J PYQ SEARCH RESULTS ---")
@@ -517,10 +610,10 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 img_markdown = f"\n![Diagram for Q{record['q_num']}]({img_url})" if img_url and img_url != "None" else ""
                 context_parts.append(f"[Course: {record['course_code']} - Q: {record['q_num']}]\n{record['q_text']}{img_markdown}\nMarks: {record['marks']}\nBTL: {record['btl']}")
         else:
-            question_embedding = await get_embedding(question)
+            question_embedding = await get_embedding(search_query)
             if question_embedding:
                 try:
-                    chunks = await hybrid_search_rrf(db, question, question_embedding, k=5)
+                    chunks = await hybrid_search_rrf(db, search_query, question_embedding, k=5)
                     if chunks:
                         context_parts.append("--- HYBRID SEARCH RESULTS (TEXT + SEMANTIC) ---")
                         for chunk in chunks:
@@ -529,6 +622,29 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                                 context_parts.append(content)
                 except Exception as e:
                     print(f"Hybrid search error in /chat: {e}")
+
+    # --- Context Re-ranking ---
+    try:
+        from embedder import embed_text, cosine_similarity
+        q_emb = await embed_text(search_query)
+        if q_emb and len(context_parts) > 1:
+            scored_parts = []
+            for part in context_parts:
+                if part.startswith("---"):
+                    # keep headers high but don't re-rank them strictly
+                    scored_parts.append((1.0, part))
+                    continue
+                p_emb = await embed_text(part[:1000]) # embed start of part
+                if p_emb:
+                    sim = cosine_similarity(q_emb, p_emb)
+                    scored_parts.append((sim, part))
+                else:
+                    scored_parts.append((0.0, part))
+            # Sort by descending similarity
+            scored_parts.sort(key=lambda x: x[0], reverse=True)
+            context_parts = [p for _, p in scored_parts]
+    except Exception as e:
+        print(f"Context re-ranking error: {e}")
 
     # Generate final answer
     final_context = "\n".join(context_parts)
@@ -541,7 +657,7 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     # Stream response and cache it
     async def stream_and_cache():
         full_response = []
-        async for chunk in generate_answer_stream(question, final_context):
+        async for chunk in generate_answer_stream(question, final_context, history=history):
             full_response.append(chunk)
             yield chunk
             
@@ -567,9 +683,28 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 full_response.append(image_block)
                 yield image_block
             
-        _set_cache(cache_key, "".join(full_response))
+        full_text_response = "".join(full_response)
+        _set_cache(cache_key, full_text_response)
+
+        # Update conversational memory for this session
+        append_session_message(session_id, "user", question)
+        append_session_message(session_id, "assistant", full_text_response)
 
     return StreamingResponse(stream_and_cache(), media_type="text/plain")
+
+
+@app.delete("/chat/history/{session_id}")
+async def clear_chat_history(session_id: str):
+    """Clears the conversational memory for a given session (e.g. on New Chat)."""
+    _session_history.pop(session_id, None)
+    _session_last_active.pop(session_id, None)
+    return {"status": "cleared", "session_id": session_id}
+
+
+@app.get("/chat/history/{session_id}")
+async def view_chat_history(session_id: str):
+    """Returns the current conversation memory for a session."""
+    return {"session_id": session_id, "history": get_session_history(session_id)}
 
 
 # =============================================================================
@@ -1020,6 +1155,18 @@ async def process_syllabus_background(
 async def process_pyq_background(
     file_path: str, course_code: str, document_id: uuid.UUID
 ):
+    try:
+        async with _pyq_semaphore:
+            await _process_pyq_background_inner(file_path, course_code, document_id)
+    except asyncio.CancelledError:
+        # Server is shutting down — task was waiting in the semaphore queue.
+        # This is harmless; just exit cleanly.
+        print(f"[PYQ] Task for {course_code} was cancelled (server shutdown).")
+
+
+async def _process_pyq_background_inner(
+    file_path: str, course_code: str, document_id: uuid.UUID
+):
     """
     Extracts structured questions from a PYQ PDF, writes them to Neo4j using the
     canonical Question → BELONGS_TO → Course path, embeds them in PostgreSQL,
@@ -1135,6 +1282,7 @@ async def process_pyq_background(
         async for db in get_db():
             for i, chunk_data in enumerate(page_chunks):
                 print(f"[PYQ] Extracting from chunk {i+1}/{len(page_chunks)} via Vision AI...")
+                await asyncio.sleep(0.5)  # rate-limit guard
                 try:
                     questions = await extract_pyq_questions(chunk_data["base64"])
                     if not questions:
@@ -1250,7 +1398,7 @@ def _require_admin(authorization: str = None):
 
 
 @app.get("/admin/extraction-review/courses")
-async def admin_list_courses(authorization: Optional[str] = None):
+async def admin_list_courses(authorization: Optional[str] = Header(None)):
     """List all courses with their extraction status and topic counts."""
     _require_admin(authorization)
     neo4j_driver = get_neo4j()
@@ -1268,7 +1416,7 @@ async def admin_list_courses(authorization: Optional[str] = None):
 
 
 @app.get("/admin/extraction-review/courses/{course_code}")
-async def admin_course_review(course_code: str, authorization: Optional[str] = None):
+async def admin_course_review(course_code: str, authorization: Optional[str] = Header(None)):
     """Return units + topics for a course, including unit raw_text for admin review."""
     _require_admin(authorization)
     neo4j_driver = get_neo4j()
@@ -1344,7 +1492,7 @@ async def admin_merge_topics(body: TopicMergeRequest, authorization: Optional[st
 
 @app.post("/admin/extraction-review/courses/{course_code}/approve")
 async def admin_approve_course_topics(
-    course_code: str, authorization: Optional[str] = None
+    course_code: str, authorization: Optional[str] = Header(None)
 ):
     """Mark all Topics for this course as approved."""
     _require_admin(authorization)
@@ -1365,7 +1513,7 @@ async def admin_approve_course_topics(
 
 @app.get("/admin/pyq-processing/{document_id}")
 async def admin_pyq_processing_status(
-    document_id: str, authorization: Optional[str] = None,
+    document_id: str, authorization: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db)
 ):
     """Return the full ProcessingReport for a PYQ document."""
@@ -1398,7 +1546,7 @@ async def admin_pyq_processing_status(
 
 @app.get("/admin/diagnostics/pyq/{course_code}")
 async def admin_pyq_diagnostics_summary(
-    course_code: str, authorization: Optional[str] = None
+    course_code: str, authorization: Optional[str] = Header(None)
 ):
     """Return PYQ stats for a course using count(DISTINCT q) to avoid double-counting."""
     _require_admin(authorization)
@@ -1430,7 +1578,7 @@ async def admin_pyq_diagnostics_summary(
 
 @app.get("/admin/diagnostics/pyq/{course_code}/questions")
 async def admin_pyq_questions_detail(
-    course_code: str, authorization: Optional[str] = None
+    course_code: str, authorization: Optional[str] = Header(None)
 ):
     """Return all questions for a course with mapping details."""
     _require_admin(authorization)
@@ -1476,7 +1624,7 @@ async def admin_pyq_questions_detail(
 
 @app.get("/admin/topic-mapping-review/{course_code}")
 async def admin_topic_mapping_review(
-    course_code: str, authorization: Optional[str] = None
+    course_code: str, authorization: Optional[str] = Header(None)
 ):
     """List all TESTS_TOPIC relationships for a course, grouped by review_status."""
     _require_admin(authorization)
@@ -1509,7 +1657,7 @@ class MappingUpdateRequest(BaseModel):
 @app.put("/admin/topic-mapping-review/{relationship_id}")
 async def admin_update_mapping(
     relationship_id: int, body: MappingUpdateRequest,
-    authorization: Optional[str] = None
+    authorization: Optional[str] = Header(None)
 ):
     """Approve, reject, or re-assign a TESTS_TOPIC relationship."""
     _require_admin(authorization)

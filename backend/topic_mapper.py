@@ -24,7 +24,10 @@ import math
 import time
 import asyncio
 import httpx
+import re
 from datetime import datetime
+
+from embedder import embed_text, cosine_similarity
 
 from dotenv import load_dotenv
 
@@ -34,37 +37,6 @@ OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL",    "http://localhost:11434")
 OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL",       "gemma4:12b-it-qat")
 
 MAX_TOPICS         = int(os.getenv("TOPIC_MAP_MAX_TOPICS",                 "2"))
-
-
-# ---------------------------------------------------------------------------
-# Embedding helpers
-# ---------------------------------------------------------------------------
-
-async def _get_embedding(text: str) -> list[float]:
-    """Fetch a 768-dimensional embedding via nomic-embed-text."""
-    try:
-        async with httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/embeddings",
-                json={"model": OLLAMA_EMBED_MODEL, "prompt": text},
-                timeout=60.0
-            )
-            resp.raise_for_status()
-            return resp.json().get("embedding", [])
-    except Exception as e:
-        print(f"[TopicMapper] Embedding error: {e}")
-        return []
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot   = sum(x * y for x, y in zip(a, b))
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(x * x for x in b))
-    if mag_a == 0 or mag_b == 0:
-        return 0.0
-    return dot / (mag_a * mag_b)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +145,7 @@ async def map_question_to_topics(
 ) -> list[dict]:
     """
     Maps a single Question to up to MAX_TOPICS approved Topics using
-    semantic similarity + keyword overlap.
+    two-stage retrieval (dense vector similarity + LLM re-ranking).
 
     question dict must have: {id, text, course_code}
 
@@ -192,9 +164,38 @@ async def map_question_to_topics(
     if not topics:
         return []
 
-    topic_names = [t["name"] for t in topics]
+    # ── Stage 1: Dense Retrieval ─────────────────────────────────────────────
+    q_emb = await embed_text(q_text)
+    if not q_emb:
+        return []
+
+    candidate_topics = []
+    for t in topics:
+        t_emb_str = t.get("embedding_json")
+        if t_emb_str:
+            try:
+                t_emb = json.loads(t_emb_str)
+            except Exception:
+                t_emb = []
+        else:
+            t_emb = await embed_text(t["name"])
+            if t_emb:
+                _save_topic_embedding(driver, t["id"], t_emb)
+        
+        if t_emb:
+            sim = cosine_similarity(q_emb, t_emb)
+            candidate_topics.append((sim, t))
+
+    candidate_topics.sort(key=lambda x: x[0], reverse=True)
+    top_k_candidates = candidate_topics[:8]  # Keep top 8 candidates
+
+    if not top_k_candidates:
+        return []
+
+    topic_names = [t["name"] for _, t in top_k_candidates]
     topic_list_str = "\n".join(f"- {name}" for name in topic_names)
 
+    # ── Stage 2: LLM Re-ranking ──────────────────────────────────────────────
     prompt = f"""You are a curriculum-aware PYQ topic classification system.
 
 Your task is to determine which EXISTING curriculum Topic node(s) are
@@ -204,40 +205,16 @@ The curriculum topics provided below are the ONLY valid topics that may
 be returned.
 
 IMPORTANT RULES:
-1. Understand the meaning, concepts, terminology, and intent of the
-   question before selecting a topic.
-2. Compare the question against the EXISTING curriculum topics.
-3. Select the most appropriate existing curriculum topic(s).
-4. A question may belong to ONE OR MORE topics if it genuinely tests
-   concepts from multiple topics.
-5. You MUST use ONLY topic names from the provided topic list.
-6. NEVER invent a new topic.
-7. NEVER create, rename, paraphrase, shorten, expand, or modify a topic
-   name.
-8. Return the topic name EXACTLY as it appears in the provided topic list.
-9. Do NOT return the Course name as a topic.
-10. Do NOT return the Unit name as a topic.
-11. If a specific Topic exists, always prefer the Topic instead of mapping
-    the question to a broader Course or Unit.
-12. Do NOT select a topic merely because it is vaguely related to the
-    question.
-13. Select a topic only when there is strong, unambiguous evidence that
-    the question tests that specific topic or theorem. If a compound topic exists
-    (e.g., "Theorem X, Topic Y"), only select it if the question explicitly tests
-    the core concepts of Theorem X or Topic Y. Do NOT map generic AC/phasor
-    analysis questions to specific named network theorems like Superposition Theorem
-    unless the question actually asks to use that theorem.
-14. If none of the provided curriculum topics is a sufficiently confident
-    match, return "Other".
-15. "Other" is a fallback classification. It is NOT permission to invent
-    a new topic.
-16. Do NOT return explanations, reasoning, or additional text outside the
-    requested JSON format.
+1. Understand the meaning, concepts, terminology, and intent of the question.
+2. Select the most appropriate existing curriculum topic(s) from the list below.
+3. You MUST use ONLY topic names from the provided topic list. NEVER invent a new topic.
+4. For each selected topic, provide a confidence score from 0 to 100.
+5. If none of the topics is a good match, return an empty list.
 
 COURSE:
 {c_code}
 
-AVAILABLE CURRICULUM TOPICS:
+CANDIDATE CURRICULUM TOPICS:
 {topic_list_str}
 
 QUESTION:
@@ -246,7 +223,10 @@ QUESTION:
 Return JSON in exactly this format:
 {{
   "topics": [
-    "Exact Topic Name"
+    {{
+      "name": "Exact Topic Name",
+      "confidence": 90
+    }}
   ]
 }}
 """
@@ -263,54 +243,67 @@ Return JSON in exactly this format:
                     "stream": False,
                     "options": {"temperature": 0.1}
                 },
-                timeout=120.0
+                timeout=180.0
             )
             resp.raise_for_status()
             result_text = resp.json().get("response", "{}")
-            result_json = json.loads(result_text)
+            
+            # Robust JSON extraction (handles markdown ```json ... ``` or trailing explanations)
+            match = re.search(r'\{.*\}', result_text, re.DOTALL)
+            if match:
+                clean_json_str = match.group(0)
+            else:
+                clean_json_str = result_text
+
+            try:
+                result_json = json.loads(clean_json_str)
+            except Exception:
+                result_json = {}
+
             selected_topics = result_json.get("topics", [])
             
-            # Map returned names back to Topic IDs (support exact, space-normalized, and comma variations)
-            def normalize_topic_key(k: str) -> str:
-                return re.sub(r'[\s\-_,]+', ' ', k).strip().lower()
-
-            name_to_id = {t["name"].lower().strip(): t["id"] for t in topics}
-            norm_to_id = {normalize_topic_key(t["name"]): t["id"] for t in topics}
+            # Map returned names back to Top-K Topic IDs and similarities
+            name_to_info = {t["name"].lower().strip(): {"id": t["id"], "sim": sim, "name": t["name"]} for sim, t in top_k_candidates}
             
-            for t_name in selected_topics:
-                if t_name == "Other":
-                    continue
+            for t_item in selected_topics:
+                t_name = t_item.get("name", "")
+                llm_conf = t_item.get("confidence", 0)
+                if not t_name: continue
                 
-                t_lower = t_name.lower().strip()
-                t_norm = normalize_topic_key(t_name)
-                matched_id = name_to_id.get(t_lower) or norm_to_id.get(t_norm)
+                # Clean accidental LLM formatting like "name: topic_name" or quotes
+                t_clean = re.sub(r'^(name|topic)\s*:\s*', '', t_name, flags=re.IGNORECASE).strip().strip('"\'')
+                t_lower = t_clean.lower().strip()
+                
+                # Direct match
+                info = name_to_info.get(t_lower)
+                
+                # Substring/fuzzy match fallback among candidates
+                if not info:
+                    for cand_lower, cand_info in name_to_info.items():
+                        if cand_lower in t_lower or t_lower in cand_lower:
+                            info = cand_info
+                            break
 
-                # Also try sub-splits if LLM returned comma-separated topics
-                matched_ids = []
-                if matched_id:
-                    matched_ids.append((matched_id, t_name))
-                elif "," in t_name:
-                    for sub_t in t_name.split(","):
-                        sub_t_clean = sub_t.strip()
-                        sub_id = name_to_id.get(sub_t_clean.lower()) or norm_to_id.get(normalize_topic_key(sub_t_clean))
-                        if sub_id:
-                            matched_ids.append((sub_id, sub_t_clean))
-
-                if matched_ids:
-                    for t_id, matched_name in matched_ids:
+                if info:
+                    semantic_score = info["sim"]
+                    llm_score = float(llm_conf) / 100.0
+                    final_confidence = 0.6 * semantic_score + 0.4 * llm_score
+                    
+                    if final_confidence >= 0.70:
+                        review_status = "approved" if final_confidence >= 0.80 else "pending_review"
                         mappings.append({
-                            "topic_id": t_id,
-                            "topic_name": matched_name,
-                            "confidence": 1.0,
-                            "semantic_score": 1.0,
-                            "keyword_score": 1.0,
-                            "review_status": "approved"
+                            "topic_id": info["id"],
+                            "topic_name": info["name"],
+                            "confidence": final_confidence,
+                            "semantic_score": semantic_score,
+                            "keyword_score": 0.0,
+                            "review_status": review_status
                         })
                         _write_tests_topic(
-                            driver, q_id, t_id, 1.0, 1.0, 1.0, "approved"
+                            driver, q_id, info["id"], final_confidence, semantic_score, 0.0, review_status
                         )
                 else:
-                    print(f"[TopicMapper] Warning: LLM returned invalid topic '{t_name}'")
+                    print(f"[TopicMapper] Warning: LLM returned invalid or unranked topic '{t_name}'")
                     
     except Exception as e:
         print(f"[TopicMapper] LLM Generation error ({type(e).__name__}): {e}")

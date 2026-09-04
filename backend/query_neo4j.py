@@ -1,56 +1,70 @@
 from neo4j import GraphDatabase
 
 
+import json
+from embedder import embed_text, cosine_similarity
+
 # =============================================================================
 # Graph RAG — primary retrieval path via TESTS_TOPIC
 # =============================================================================
 
-def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
+async def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
     """
-    PRIMARY retrieval path for topic-based PYQ lookup.
-
+    PRIMARY retrieval path for topic-based PYQ lookup using Semantic Search.
+    
     Traverses: Topic <-[TESTS_TOPIC]- Question
-
     Returns only auto-approved mappings (review_status = "approved").
-    Falls back to empty list if no TESTS_TOPIC relationships exist yet —
-    the caller should then fall back to fetch_all_problems_by_topic().
     """
+    topic_ids_to_query = []
+    
+    # 1. Try semantic matching first
+    topic_emb = await embed_text(topic)
+    if topic_emb:
+        with neo4j_driver.session() as session:
+            topics_result = session.run("MATCH (t:Topic) WHERE t.embedding IS NOT NULL RETURN t.id AS id, t.embedding AS emb")
+            best_topics = []
+            for r in topics_result:
+                try:
+                    t_emb = json.loads(r["emb"])
+                    sim = cosine_similarity(topic_emb, t_emb)
+                    if sim >= 0.65:  # threshold for similarity
+                        best_topics.append((sim, r["id"]))
+                except Exception:
+                    pass
+            
+            if best_topics:
+                best_topics.sort(key=lambda x: x[0], reverse=True)
+                topic_ids_to_query = [t_id for _, t_id in best_topics[:3]]
+
     with neo4j_driver.session() as session:
+        if topic_ids_to_query:
+            result = session.run("""
+                MATCH (t:Topic)
+                WHERE t.id IN $topic_ids
+                MATCH (q:Question)-[r:TESTS_TOPIC]->(t)
+                WHERE r.review_status IN ['approved', 'pending_review']
+                OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
+                OPTIONAL MATCH (q)-[:EXTRACTED_FROM]->(doc:Document)
+                WITH q, doc, collect(DISTINCT co.id) AS course_outcomes, collect(DISTINCT t.name) AS topics, max(r.confidence) AS max_confidence
+                WITH q.text AS text, collect(q.id)[0] AS id, collect(q.question_number)[0] AS question_number, collect(q.marks)[0] AS marks, collect(q.btl)[0] AS btl, collect(q.image_url)[0] AS image_url, collect(q.course_code)[0] AS course_code, collect(course_outcomes[0])[0] AS co_id, collect(topics[0])[0] AS topic_name, max(max_confidence) AS mapping_confidence, collect(coalesce(doc.id, ''))[0] AS source_document
+                RETURN id, question_number, text, marks, btl, image_url, course_code, co_id, topic_name, mapping_confidence, source_document
+                ORDER BY mapping_confidence DESC, toInteger(question_number) ASC
+            """, topic_ids=topic_ids_to_query)
+            data = result.data()
+            if data: return data
+
+        # Fallback to pure string matching
         result = session.run("""
             MATCH (t:Topic)
             WHERE toLower(t.name) CONTAINS toLower($topic)
                OR toLower(t.normalized_name) CONTAINS toLower($topic)
             MATCH (q:Question)-[r:TESTS_TOPIC]->(t)
-            WHERE r.review_status = 'approved'
+            WHERE r.review_status IN ['approved', 'pending_review']
             OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
             OPTIONAL MATCH (q)-[:EXTRACTED_FROM]->(doc:Document)
-            WITH q, doc,
-                 collect(DISTINCT co.id) AS course_outcomes,
-                 collect(DISTINCT t.name) AS topics,
-                 max(r.confidence) AS max_confidence
-            WITH q.text AS text,
-                 collect(q.id)[0] AS id,
-                 collect(q.question_number)[0] AS question_number,
-                 collect(q.marks)[0] AS marks,
-                 collect(q.btl)[0] AS btl,
-                 collect(q.image_url)[0] AS image_url,
-                 collect(q.course_code)[0] AS course_code,
-                 collect(course_outcomes[0])[0] AS co_id,
-                 collect(topics[0])[0] AS topic_name,
-                 max(max_confidence) AS mapping_confidence,
-                 collect(doc.filename)[0] AS source_document
-            RETURN
-                id,
-                question_number,
-                text,
-                marks,
-                btl,
-                image_url,
-                course_code,
-                co_id,
-                topic_name,
-                mapping_confidence,
-                source_document
+            WITH q, doc, collect(DISTINCT co.id) AS course_outcomes, collect(DISTINCT t.name) AS topics, max(r.confidence) AS max_confidence
+            WITH q.text AS text, collect(q.id)[0] AS id, collect(q.question_number)[0] AS question_number, collect(q.marks)[0] AS marks, collect(q.btl)[0] AS btl, collect(q.image_url)[0] AS image_url, collect(q.course_code)[0] AS course_code, collect(course_outcomes[0])[0] AS co_id, collect(topics[0])[0] AS topic_name, max(max_confidence) AS mapping_confidence, collect(coalesce(doc.id, ''))[0] AS source_document
+            RETURN id, question_number, text, marks, btl, image_url, course_code, co_id, topic_name, mapping_confidence, source_document
             ORDER BY mapping_confidence DESC, toInteger(question_number) ASC
         """, topic=topic)
         return result.data()
