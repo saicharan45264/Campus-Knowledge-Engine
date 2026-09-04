@@ -43,21 +43,30 @@ async function doLogin(roleHint) {
     const role = payload.role || (u === 'admin' ? 'admin' : 'student');
     
     setAuth(data.access_token, role, u);
+    console.log('Login successful, payload:', payload, 'Redirecting to:', role === 'admin' ? 'admin.html' : 'student.html');
     // Use relative paths — works whether served via FastAPI /public/ or a local dev server
     window.location.href = role === 'admin' ? 'admin.html' : 'student.html';
 
   } catch (e) {
-    errEl.textContent = 'Network error — is the backend running?';
+    console.error('Login error:', e);
+    errEl.textContent = `Error: ${e.message || 'Network error — is the backend running?'}`;
   } finally {
     btnS.disabled = btnA.disabled = false;
   }
 }
 
-// Bind to window so inline onclick works, or better attach event listeners
+// Bind to window so inline onclick works
 window.doLogin = doLogin;
 
-document.getElementById('auth-pass').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doLogin('student');
+const studentBtn = document.getElementById('btn-student');
+if (studentBtn) studentBtn.addEventListener('click', (e) => { e.preventDefault(); doLogin('student'); });
+
+const adminBtn = document.getElementById('btn-admin');
+if (adminBtn) adminBtn.addEventListener('click', (e) => { e.preventDefault(); doLogin('admin'); });
+
+const passInput = document.getElementById('auth-pass');
+if (passInput) passInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin('admin');
 });
 
 // Clear stale token on login page load

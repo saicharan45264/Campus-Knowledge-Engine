@@ -75,6 +75,13 @@
 
       <!-- Input Bar -->
       <div class="chat-input-area">
+        <div id="image-preview-container" style="display: none; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 8px; font-size: 0.85rem; color: #ccc;">
+          <img id="image-preview-thumb" src="" alt="preview" style="width: 32px; height: 32px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+          <span id="image-preview-name" style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></span>
+          <button onclick="window.clearImagePreview()" style="background: none; border: none; color: #fff; cursor: pointer; padding: 4px; display: flex; align-items: center; justify-content: center;" title="Remove image">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
         <div class="input-wrap">
           <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, PYQs, or any topic…"></textarea>
           <div class="input-btns">
@@ -98,6 +105,6 @@
 
   </div>
 </div>
-<script type="module" src="src/js/pages/student.js"></script>
+<script type="module" src="src/js/pages/student.js?v=2"></script>
 </body>
 </html>

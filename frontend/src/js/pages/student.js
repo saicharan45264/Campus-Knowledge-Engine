@@ -225,10 +225,18 @@ export async function sendMessage() {
   showTyping();
 
   try {
+    const payload = { message: text, session_id: currentSessionId };
+    if (pendingImageB64) {
+      payload.image_b64 = pendingImageB64;
+    }
+
     const res = await apiFetch('/chat', {
       method: 'POST',
-      body: JSON.stringify({ message: text, session_id: currentSessionId }),
+      body: JSON.stringify(payload),
     });
+
+    // Clear image state after sending
+    clearImagePreview();
 
     // ── Check if backend returned a structured Problem List (not a streaming text) ──
     const responseType = res.headers.get('X-Response-Type');
@@ -342,11 +350,44 @@ document.getElementById('chat-input').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
+let pendingImageB64 = null;
+
+export function showImagePreview(filename, dataUrl) {
+  document.getElementById('image-preview-container').style.display = 'flex';
+  document.getElementById('image-preview-name').textContent = filename;
+  document.getElementById('image-preview-thumb').src = dataUrl;
+}
+
+export function clearImagePreview() {
+  pendingImageB64 = null;
+  document.getElementById('image-preview-container').style.display = 'none';
+  document.getElementById('image-preview-name').textContent = '';
+  document.getElementById('image-preview-thumb').src = '';
+  // Clear file input so same file can be selected again
+  const fileInput = document.querySelector('input[type="file"]');
+  if (fileInput) fileInput.value = '';
+}
+window.clearImagePreview = clearImagePreview;
+
 export function handleAttach(input) {
-  if (input.files[0]) {
-    document.getElementById('chat-input').value = `[Attached: ${input.files[0].name}] `;
-    document.getElementById('chat-input').focus();
-  }
+  const file = input.files[0];
+  if (!file || !file.type.startsWith('image/')) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    // Strip data URL prefix ("data:image/png;base64,")
+    const dataUrl = e.target.result;
+    pendingImageB64 = dataUrl.split(',')[1];
+    
+    showImagePreview(file.name, dataUrl);
+    
+    const chatInput = document.getElementById('chat-input');
+    if (!chatInput.value.trim()) {
+      chatInput.value = 'Find PYQs related to this diagram';
+    }
+    chatInput.focus();
+  };
+  reader.readAsDataURL(file);
 }
 window.handleAttach = handleAttach;
 window.logout = logout;
