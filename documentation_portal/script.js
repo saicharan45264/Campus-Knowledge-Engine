@@ -124,31 +124,26 @@ const PROJECT = {
     milestones: [
       {
         title: "Literature Survey & Research Gap Identification",
-        date: "August – September 2025",
         status: "done",
         text: "Analyzed limitations of naive vector RAG across 15+ peer-reviewed papers; formulated the MM-AKG academic ontology and multimodal bounding-box slicing specification."
       },
       {
         title: "Ingestion Pipeline & Layout Parser Engineering",
-        date: "October – November 2025",
         status: "done",
         text: "Built deterministic PyMuPDF regex parser (100% precision) and spatial bounding-box diagram extraction window with deterministic MD5 hashing for past year examination papers."
       },
       {
         title: "Graph-RAG & Hybrid pgvector Datastore Setup",
-        date: "December 2025 – January 2026",
         status: "done",
         text: "Populated Neo4j with statutory courses, units, and past questions; integrated PostgreSQL pgvector with Reciprocal Rank Fusion (k=60)."
       },
       {
         title: "Gemma 4 12B Task Tuning & IEEE Paper",
-        date: "February – March 2026",
         status: "active",
         text: "Evaluated intent router (92.7% accuracy / 92.8% Macro-F1), verified 100% prerequisite DAG accuracy, achieved 99.3% topic mapping, and finalized IEEE conference paper."
       },
       {
         title: "Containerized Edge Deployment & Viva Defense",
-        date: "April – May 2026",
         status: "upcoming",
         text: "Dockerized intranet packaging, final end-to-end integration testing, and project defense before the university review committee."
       }
@@ -163,8 +158,8 @@ const PROJECT = {
         title: "IEEE Conference Research Paper",
         subtitle: "Full paper: 'M.A.C.H: Multimodal Academic Cognitive Hub — A Fine-Tuned Graph-RAG Framework'",
         type: "PDF",
-        url: "https://drive.google.com/file/d/1aU8kC23g5EdBnojzrS5kVL3557-V48LS/view?usp=sharing",
-        previewUrl: "https://drive.google.com/file/d/1aU8kC23g5EdBnojzrS5kVL3557-V48LS/preview"
+        url: "MACH_researchPaper.pdf",
+        previewUrl: "MACH_researchPaper.pdf"
       }
     ]
   },
@@ -176,14 +171,14 @@ const PROJECT = {
     description: "Production codebase for M.A.C.H. AI: deterministic layout parser, Neo4j Graph-RAG traversal, pgvector hybrid search, and Gemma 4 12B QLoRA adapter fine-tuning."
   },
 
-  // ── 08. Demonstration Videos ──
+  // ── 09. Demonstration Videos ──
   demos: {
     intro: "Live working demonstration of the M.A.C.H. AI platform on local hardware.",
     items: [
       {
         title: "M.A.C.H. AI — Live Working System Walkthrough",
         text: "Comprehensive working demonstration of the M.A.C.H. AI cognitive platform: hierarchical curriculum knowledge representation, topological prerequisite DAG traversal via Neo4j, spatial diagram cropping and cross-page figure stitching, and student-centric query execution.",
-        url: "https://drive.google.com/file/d/1mrqbRiv40MEJ88byAMhBTHdWDCJnOSo8/view?usp=sharing"
+        url: "MACH.mp4"
       }
     ]
   }
@@ -347,6 +342,39 @@ function initInteractions() {
       }
     });
   }
+
+  // ── GENERIC CODE SNIPPET COPY BUTTONS ──
+  document.querySelectorAll('.copy-code-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const targetEl = targetId ? $(targetId) : null;
+      const txt = targetEl ? targetEl.innerText.trim() : (btn.dataset.code || '');
+      const orig = btn.innerHTML;
+      
+      const done = () => {
+        btn.innerHTML = '<span data-icon="check" data-size="13"></span><span>Copied!</span>';
+        injectIcons(btn);
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.innerHTML = orig;
+          injectIcons(btn);
+          btn.classList.remove('copied');
+        }, 1800);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(done, done);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = txt;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        ta.remove();
+        done();
+      }
+    });
+  });
 }
 
 // Execute on DOM Ready

@@ -36,6 +36,7 @@
         <a href="#progress">Progress</a>
         <a href="#docs">Documentation</a>
         <a href="#github">GitHub</a>
+        <a href="#execution">Execution Guide</a>
         <a href="#demos">Video</a>
       </div>
       <a class="nav-cta" id="nav-gh" href="https://github.com/saicharan45264/Campus-Knowledge-Engine" target="_blank"
@@ -340,8 +341,7 @@
           <div class="ms-node"><span data-icon="check" data-size="15"></span></div>
           <div class="ms-card">
             <div class="ms-head">
-              <h3>Literature Survey &amp; Research Gap Identification</h3><span class="ms-date">August – September
-                2025</span>
+              <h3>Literature Survey &amp; Research Gap Identification</h3>
             </div>
             <p>Analyzed limitations of naive vector RAG across 15+ peer-reviewed papers; formulated the MM-AKG academic
               ontology and multimodal bounding-box slicing specification.</p>
@@ -352,8 +352,7 @@
           <div class="ms-node"><span data-icon="check" data-size="15"></span></div>
           <div class="ms-card">
             <div class="ms-head">
-              <h3>Ingestion Pipeline &amp; Layout Parser Engineering</h3><span class="ms-date">October – November
-                2025</span>
+              <h3>Ingestion Pipeline &amp; Layout Parser Engineering</h3>
             </div>
             <p>Built deterministic PyMuPDF regex parser (100% precision) and spatial bounding-box diagram extraction
               window with deterministic MD5 hashing for past year examination papers.</p>
@@ -364,8 +363,7 @@
           <div class="ms-node"><span data-icon="check" data-size="15"></span></div>
           <div class="ms-card">
             <div class="ms-head">
-              <h3>Graph-RAG &amp; Hybrid pgvector Datastore Setup</h3><span class="ms-date">December 2025 – January
-                2026</span>
+              <h3>Graph-RAG &amp; Hybrid pgvector Datastore Setup</h3>
             </div>
             <p>Populated Neo4j with statutory courses, units, and past questions; integrated PostgreSQL pgvector with
               Reciprocal Rank Fusion (k=60).</p>
@@ -376,7 +374,7 @@
           <div class="ms-node"><span data-icon="dot" data-size="18"></span></div>
           <div class="ms-card">
             <div class="ms-head">
-              <h3>Gemma 4 12B Task Tuning &amp; IEEE Paper</h3><span class="ms-date">February – March 2026</span>
+              <h3>Gemma 4 12B Task Tuning &amp; IEEE Paper</h3>
             </div>
             <p>Evaluated intent router (92.7% accuracy / 92.8% Macro-F1), verified 100% prerequisite DAG accuracy,
               achieved 99.3% topic mapping, and finalized IEEE conference paper.</p>
@@ -387,7 +385,7 @@
           <div class="ms-node"><span data-icon="clock" data-size="15"></span></div>
           <div class="ms-card">
             <div class="ms-head">
-              <h3>Containerized Edge Deployment &amp; Viva Defense</h3><span class="ms-date">April – May 2026</span>
+              <h3>Containerized Edge Deployment &amp; Viva Defense</h3>
             </div>
             <p>Dockerized intranet packaging, final end-to-end integration testing, and project defense before the
               university review committee.</p>
@@ -407,10 +405,10 @@
         <p id="docs-intro">Access official project deliverables, IEEE research manuscripts, system design reports, and
           review slides.</p>
       </div>
-      <div class="doc-grid" id="doc-grid" style="display: flex; justify-content: center;">
-        <a class="tile reveal" href="https://drive.google.com/file/d/1aU8kC23g5EdBnojzrS5kVL3557-V48LS/view?usp=sharing" target="_blank" rel="noopener" style="max-width: 720px; width: 100%;">
-          <span class="tl">IEEE Conference Research Paper (PDF)<small>Full paper: 'M.A.C.H: Multimodal Academic Cognitive Hub — A Fine-Tuned Graph-RAG Framework' · Preview in Google Drive</small></span>
-          <span class="ti" data-icon="external" data-size="18"></span>
+      <div class="doc-grid" id="doc-grid" style="display: flex; justify-content: center; gap: 16px; flex-wrap: wrap;">
+        <a class="tile reveal" href="MACH_researchPaper.pdf" target="_blank" rel="noopener" style="max-width: 720px; width: 100%;">
+          <span class="tl">IEEE Conference Research Paper (PDF)<small>Full paper: 'M.A.C.H: Multimodal Academic Cognitive Hub — A Fine-Tuned Graph-RAG Framework' · Open &amp; Read Direct PDF</small></span>
+          <span class="ti" data-icon="download" data-size="18"></span>
         </a>
       </div>
     </div>
@@ -452,20 +450,240 @@
     </div>
   </section>
 
-  <!-- ── 08. DEMONSTRATION VIDEO (Single Walkthrough Showcase) ── -->
-  <section class="block alt" id="demos">
+  <!-- ── 08. PROJECT EXECUTION GUIDE ── -->
+  <section class="block alt" id="execution">
     <div class="wrap">
       <div class="sec-head reveal">
-        <div class="eyebrow">08 — System Walkthrough</div>
+        <div class="eyebrow">08 — Execution Guide</div>
+        <h2>How to Run M.A.C.H. AI Locally</h2>
+        <p>Comprehensive setup instructions, container orchestration, model deployment, and local service execution.</p>
+      </div>
+
+      <!-- Prerequisites Bar -->
+      <div class="exec-prereq-bar reveal">
+        <div class="prereq-item">
+          <div class="lbl">Docker Engine</div>
+          <div class="val">Docker Desktop</div>
+          <div class="desc">PostgreSQL 16 (pgvector) &amp; Neo4j 5.24 Community containers</div>
+        </div>
+        <div class="prereq-item">
+          <div class="lbl">Python Runtime</div>
+          <div class="val">Python 3.11</div>
+          <div class="desc">FastAPI backend, PyMuPDF, asyncpg, Pillow &amp; Neo4j driver</div>
+        </div>
+        <div class="prereq-item">
+          <div class="lbl">Inference Engine</div>
+          <div class="val">Ollama / Colab T4</div>
+          <div class="desc">Local Gemma 4 12B QAT &amp; nomic-embed-text (or Ngrok tunnel)</div>
+        </div>
+        <div class="prereq-item">
+          <div class="lbl">Client Access</div>
+          <div class="val">Web Browser</div>
+          <div class="desc">Chrome / Edge / Safari (direct HTML load, no bundler needed)</div>
+        </div>
+      </div>
+
+      <!-- Step-by-Step Execution Cards -->
+      <div class="exec-grid">
+
+        <!-- Step 1: Environment Setup -->
+        <div class="exec-card reveal">
+          <div class="exec-card-head">
+            <span class="exec-step-badge">STEP 01</span>
+            <div class="exec-card-info">
+              <h3>Clone Repository &amp; Configure Environment</h3>
+              <p>Initialize your local workspace, generate the environment file from template, and configure API endpoints.</p>
+            </div>
+          </div>
+          <div class="exec-card-body">
+            <div class="code-box">
+              <div class="code-box-header">
+                <span class="code-box-title">Terminal — Bash / Zsh</span>
+                <button class="copy-code-btn" type="button" data-target="code-step1">
+                  <span data-icon="copy" data-size="12"></span><span>Copy Commands</span>
+                </button>
+              </div>
+              <div class="code-content" id="code-step1"><span class="c"># 1. Clone repository and navigate to root</span>
+<span class="p">$</span> git clone https://github.com/saicharan45264/Campus-Knowledge-Engine.git
+<span class="p">$</span> cd Campus-Knowledge-Engine
+
+<span class="c"># 2. Copy the environment variables template</span>
+<span class="p">$</span> cp .env.example .env</div>
+            </div>
+
+            <div class="exec-subcards">
+              <div class="exec-subcard">
+                <h4><span class="port-badge">OLLAMA</span> Inference Configuration</h4>
+                <p>Set <code>OLLAMA_BASE_URL=http://localhost:11434</code> (or your public Ngrok tunnel URL if hosting on Google Colab GPU).</p>
+              </div>
+              <div class="exec-subcard">
+                <h4><span class="port-badge">DATABASE</span> Port Bindings</h4>
+                <p>Default ports: PostgreSQL at <code>5434</code> (to avoid local 5432 conflicts) and Neo4j Bolt at <code>7687</code> (Browser: <code>7474</code>).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Databases (Docker Compose) -->
+        <div class="exec-card reveal">
+          <div class="exec-card-head">
+            <span class="exec-step-badge">STEP 02</span>
+            <div class="exec-card-info">
+              <h3>Spin Up PostgreSQL &amp; Neo4j via Docker Compose</h3>
+              <p>Launch containerized relational vector datastore and graph database with persistent named volumes.</p>
+            </div>
+          </div>
+          <div class="exec-card-body">
+            <div class="code-box">
+              <div class="code-box-header">
+                <span class="code-box-title">Terminal — Docker Compose</span>
+                <button class="copy-code-btn" type="button" data-target="code-step2">
+                  <span data-icon="copy" data-size="12"></span><span>Copy Commands</span>
+                </button>
+              </div>
+              <div class="code-content" id="code-step2"><span class="c"># Start PostgreSQL (pgvector) and Neo4j in background</span>
+<span class="p">$</span> docker compose up -d
+
+<span class="c"># Verify both containers are running and healthy</span>
+<span class="p">$</span> docker compose ps</div>
+            </div>
+
+            <div class="exec-subcards">
+              <div class="exec-subcard">
+                <h4><span class="port-badge">PORT 5434</span> PostgreSQL 16 + pgvector</h4>
+                <p>Stores document metadata, syllabus text, and 768-dimensional question embeddings with HNSW indexing.</p>
+              </div>
+              <div class="exec-subcard">
+                <h4><span class="port-badge">PORT 7474 / 7687</span> Neo4j Graph Browser</h4>
+                <p>Inspect graph topology in your browser at <code>http://localhost:7474</code> (Username: <code>neo4j</code>, Password: <code>clpassword</code>).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: LLM Engine Setup -->
+        <div class="exec-card reveal">
+          <div class="exec-card-head">
+            <span class="exec-step-badge">STEP 03</span>
+            <div class="exec-card-info">
+              <h3>Deploy Vision-Language Models (Ollama or Google Colab)</h3>
+              <p>Pull embedding and generation models to serve semantic vectors and zero-telemetry local inference.</p>
+            </div>
+          </div>
+          <div class="exec-card-body">
+            <div class="code-box">
+              <div class="code-box-header">
+                <span class="code-box-title">Terminal — Option A: Local Ollama Execution</span>
+                <button class="copy-code-btn" type="button" data-target="code-step3a">
+                  <span data-icon="copy" data-size="12"></span><span>Copy Commands</span>
+                </button>
+              </div>
+              <div class="code-content" id="code-step3a"><span class="c"># Pull dense text embedding model (768-dim, 137M params)</span>
+<span class="p">$</span> ollama pull nomic-embed-text
+
+<span class="c"># Pull grounded generation &amp; vision model (12B QAT)</span>
+<span class="p">$</span> ollama pull gemma4:12b-it-qat
+
+<span class="c"># Start Ollama service daemon</span>
+<span class="p">$</span> ollama serve</div>
+            </div>
+
+            <div class="exec-subcards">
+              <div class="exec-subcard">
+                <h4>Option B: Free Google Colab T4 GPU (Alternative)</h4>
+                <p>If running on hardware without sufficient GPU VRAM, open a free Google Colab notebook (T4 GPU runtime), run the setup script from <code>docs/colab_setup.md</code> with <code>pyngrok</code>, and copy the tunnel URL to <code>OLLAMA_BASE_URL</code> in your <code>.env</code>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 4: Python Backend Launch -->
+        <div class="exec-card reveal">
+          <div class="exec-card-head">
+            <span class="exec-step-badge">STEP 04</span>
+            <div class="exec-card-info">
+              <h3>Install Dependencies &amp; Start FastAPI Backend</h3>
+              <p>Activate a Python 3.11 virtual environment, install requirements, and boot the asynchronous API server.</p>
+            </div>
+          </div>
+          <div class="exec-card-body">
+            <div class="code-box">
+              <div class="code-box-header">
+                <span class="code-box-title">Terminal — Python Backend</span>
+                <button class="copy-code-btn" type="button" data-target="code-step4">
+                  <span data-icon="copy" data-size="12"></span><span>Copy Commands</span>
+                </button>
+              </div>
+              <div class="code-content" id="code-step4"><span class="c"># 1. Create and activate Python 3.11 virtual environment</span>
+<span class="p">$</span> python3.11 -m venv venv
+<span class="p">$</span> source venv/bin/activate
+
+<span class="c"># 2. Upgrade pip and install all backend requirements</span>
+<span class="p">$</span> pip install --upgrade pip
+<span class="p">$</span> pip install -r requirements.txt
+
+<span class="c"># 3. Navigate into backend directory and launch server</span>
+<span class="p">$</span> cd backend
+<span class="p">$</span> python app.py</div>
+            </div>
+
+            <div class="exec-subcards">
+              <div class="exec-subcard">
+                <h4><span class="port-badge">PORT 8000</span> Backend API Endpoint</h4>
+                <p>FastAPI boots on <code>http://localhost:8000</code> with CORS enabled for client communication.</p>
+              </div>
+              <div class="exec-subcard">
+                <h4><span class="port-badge">SWAGGER</span> Interactive API Documentation</h4>
+                <p>Explore all <code>/upload</code>, <code>/chat</code>, <code>/documents</code>, and <code>/reset</code> endpoints live at <code>http://localhost:8000/docs</code>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 5: Frontend Portals Access -->
+        <div class="exec-card reveal">
+          <div class="exec-card-head">
+            <span class="exec-step-badge">STEP 05</span>
+            <div class="exec-card-info">
+              <h3>Open Client Portals (Admin &amp; Student Interfaces)</h3>
+              <p>Launch the frontend directly in your browser without requiring complex build steps or Node.js tooling.</p>
+            </div>
+          </div>
+          <div class="exec-card-body">
+            <div class="code-box">
+              <div class="code-box-header">
+                <span class="code-box-title">Browser Access — Direct HTML Execution</span>
+                <button class="copy-code-btn" type="button" data-target="code-step5">
+                  <span data-icon="copy" data-size="12"></span><span>Copy Commands</span>
+                </button>
+              </div>
+              <div class="code-content" id="code-step5"><span class="c"># Open the login portal in your default browser (macOS)</span>
+<span class="p">$</span> open frontend/login.html
+
+<span class="c"># Or on Linux:</span>
+<span class="p">$</span> xdg-open frontend/login.html</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 09. DEMONSTRATION VIDEO (Single Walkthrough Showcase) ── -->
+  <section class="block" id="demos">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div class="eyebrow">09 — System Walkthrough</div>
         <h2>Working System Demonstration</h2>
         <p id="demo-intro">Live end-to-end system walkthrough demonstrating M.A.C.H. AI on on-premise hardware.</p>
       </div>
       <div class="vid-single reveal">
         <div class="vid-frame">
-          <iframe src="https://drive.google.com/file/d/1mrqbRiv40MEJ88byAMhBTHdWDCJnOSo8/preview"
-            title="M.A.C.H. AI System Walkthrough"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-            allowfullscreen loading="lazy"></iframe>
+          <video controls playsinline preload="metadata" style="width: 100%; height: 100%; border: 0; background: #0F172A; display: block;">
+            <source src="MACH.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
         </div>
         <div class="vid-info">
           <h3>M.A.C.H. AI — Live End-to-End System Walkthrough</h3>
@@ -473,10 +691,9 @@
             knowledge representation, topological prerequisite DAG traversal via Neo4j, spatial diagram cropping and
             cross-page figure stitching, and student-centric query execution.</p>
           <div class="vid-actions" style="margin-top: 16px;">
-            <a class="tile" href="https://drive.google.com/file/d/1mrqbRiv40MEJ88byAMhBTHdWDCJnOSo8/view?usp=sharing"
-              target="_blank" rel="noopener" style="max-width: 320px;">
-              <span class="tl">Open Full Video in Google Drive<small>Direct 1080p stream &amp; download</small></span>
-              <span class="ti" data-icon="external" data-size="16"></span>
+            <a class="tile" href="MACH.mp4" download="MACH_System_Walkthrough.mp4" style="max-width: 340px;">
+              <span class="tl">Download Walkthrough Video<small>Direct MP4 (1080p · 41 MB)</small></span>
+              <span class="ti" data-icon="download" data-size="16"></span>
             </a>
           </div>
         </div>

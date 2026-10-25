@@ -12,6 +12,7 @@ venv/
 backend/uploads/
 uploads/
 *.pdf
+!documentation_portal/*.pdf
 *.pptx
 
 # ── Environment ──
