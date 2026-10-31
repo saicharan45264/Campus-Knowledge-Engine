@@ -1,7 +1,7 @@
 # M.A.C.H. 
 **Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG Framework for Campus Knowledge Systems.**
 
-A Graph-RAG system that turns university syllabi, regulations, timetables, and past year question papers into an interactive Knowledge Graph, allowing students to ask natural language questions grounded in official course materials.
+A Graph-RAG system that turns university syllabus documents, regulations, timetables, and past year question papers into an interactive Knowledge Graph, allowing students to ask natural language questions grounded in official course materials.
 
 ---
 

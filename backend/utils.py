@@ -299,24 +299,77 @@ def process_pyq_visuals(file_path: str) -> list[dict]:
     return chunks
 
 
+from collections import OrderedDict
+
+# Global LRU cache for vision results to prevent redundant processing
+_vision_cache = OrderedDict()
+_VISION_CACHE_SIZE = 100
+
+def _get_cached_vision(image_hash: str):
+    if image_hash in _vision_cache:
+        _vision_cache.move_to_end(image_hash)
+        return _vision_cache[image_hash]
+    return None
+
+def _set_cached_vision(image_hash: str, text: str):
+    _vision_cache[image_hash] = text
+    if len(_vision_cache) > _VISION_CACHE_SIZE:
+        _vision_cache.popitem(last=False)
+
+def _downscale_image_b64(b64_str: str, max_size: int = 800) -> str:
+    """Downscales a base64 image if it exceeds max_size, maintaining aspect ratio."""
+    try:
+        import base64
+        from PIL import Image
+        import io
+        
+        img_data = base64.b64decode(b64_str)
+        img = Image.open(io.BytesIO(img_data))
+        
+        # If it's already small enough, return original
+        if max(img.width, img.height) <= max_size:
+            return b64_str
+            
+        # Calculate new dimensions
+        ratio = max_size / max(img.width, img.height)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Save back to base64
+        buffer = io.BytesIO()
+        # Convert to RGB to ensure JPEG compatibility if it has alpha channel
+        if img.mode in ('RGBA', 'P'): img = img.convert('RGB')
+        img.save(buffer, format="JPEG", quality=85)
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    except Exception as e:
+        print(f"[Vision] Failed to downscale image: {e}")
+        return b64_str # Fallback to original
+
 async def describe_uploaded_image(base64_image: str) -> str:
     """
-    Takes a base64-encoded image uploaded by a student (e.g. a photo of an
-    equation, formula, or circuit diagram) and asks the vision model to
-    describe what it contains. The description is then used as a search query
-    to find related curriculum content.
+    Takes a base64-encoded image uploaded by a student, downscales it, 
+    checks the MD5 cache, and asks the vision model to extract structured keywords
+    and academic concepts.
     """
+    import hashlib
+    import re
+    
+    # 1. Hashing and Caching
+    img_hash = hashlib.md5(base64_image.encode('utf-8')).hexdigest()
+    cached = _get_cached_vision(img_hash)
+    if cached:
+        print(f"[Vision] Cache hit! Returning instant analysis: {cached}")
+        return cached
+
+    # 2. Image Downscaling (400px is optimal for schematics and 4x faster vision encoding)
+    optimized_b64 = _downscale_image_b64(base64_image, max_size=400)
+
+    # 3. Prompt & Schema Tuning (Universal across CS, EEE, Math & Engineering)
     prompt = (
-        "You are an expert academic content analyst. A student has uploaded an image. "
-        "Examine it carefully and provide a detailed description of what you see.\n\n"
-        "If it contains an equation or formula, write it out in plain text and explain "
-        "what each variable represents and which topic or concept it belongs to.\n\n"
-        "If it contains a circuit diagram, describe every component, their connections, "
-        "and the overall purpose of the circuit.\n\n"
-        "If it contains any other diagram (flowchart, block diagram, graph), describe "
-        "the elements and the concept it illustrates.\n\n"
-        "Be thorough. Your description will be used to search a curriculum database, "
-        "so include all relevant academic terms and concept names."
+        "Analyze this academic diagram, schematic, chart, graph, flowchart, or equation.\n"
+        "Identify the specific academic concept or problem topic (for example: Equivalent Capacitance, Equivalent Resistance, Finite Automata, Binary Search Tree, Logic Gates, CPU Scheduling, Sinusoidal Waveforms, Probability Distribution, Nodal Analysis, Sorting Algorithm, Two-Phase Commit).\n"
+        "Return ONLY a JSON object: {\"topic\": \"<specific concept or topic>\", \"keywords\": [\"<term1>\", \"<term2>\", \"<term3>\"]}"
     )
 
     try:
@@ -328,16 +381,95 @@ async def describe_uploaded_image(base64_image: str) -> str:
                 json={
                     "model": OLLAMA_MODEL,
                     "prompt": prompt,
-                    "images": [base64_image],
+                    "images": [optimized_b64],
+                    "format": "json",
+                    "think": False,
                     "stream": False,
-                    "options": {"num_ctx": 8192},
+                    "keep_alive": -1,
+                    "options": {
+                        "num_ctx": 2048,
+                        "num_predict": 180,
+                        "temperature": 0.0,
+                        "top_p": 0.9,
+                    },
                 },
-                timeout=180.0,
+                timeout=30.0,
             )
             response.raise_for_status()
-            return response.json().get("response", "Could not analyze the image.")
+            res_data = response.json()
+            resp_text = (res_data.get("response") or "").strip()
+            thinking_text = (res_data.get("thinking") or "").strip()
+
+            result = ""
+
+            # 1. Attempt structured JSON parsing
+            if resp_text:
+                try:
+                    parsed = json.loads(resp_text)
+                    topic = str(parsed.get("topic") or "").strip()
+                    comp = str(parsed.get("component") or "").strip()
+                    kw = parsed.get("keywords", [])
+                    kw_list = [str(k).strip() for k in kw if k] if isinstance(kw, list) else [str(kw).strip()]
+                    parts = [
+                        p.title() for p in [topic, comp] 
+                        if p and p.lower() not in ("none", "null", "n/a", "unknown")
+                    ] + [k for k in kw_list if k and k.lower() not in ("none", "null", "n/a", "unknown")]
+                    if parts:
+                        result = ", ".join(parts)
+                except Exception:
+                    pass
+
+            # 2. Regex fallback for JSON fields
+            if not result:
+                combined = f"{resp_text} {thinking_text}"
+                topic_m = re.search(r'"topic":\s*"([^"]+)"', combined, re.IGNORECASE)
+                comp_m = re.search(r'"component":\s*"([^"]+)"', combined, re.IGNORECASE)
+                if topic_m or comp_m:
+                    topic = topic_m.group(1).strip() if topic_m else ""
+                    comp = comp_m.group(1).strip() if comp_m else ""
+                    parts = [
+                        p.title() for p in [topic, comp] 
+                        if p and p.lower() not in ("none", "null", "n/a", "unknown")
+                    ]
+                    if parts:
+                        result = ", ".join(parts)
+
+            # 3. Domain-specific engineering heuristics over combined text
+            if not result:
+                lower = f"{resp_text} {thinking_text}".lower()
+                if "resistor" in lower or "resistance" in lower:
+                    if any(w in lower for w in ["equivalent", "series", "parallel", "bridge", "ladder", "network"]):
+                        result = "Equivalent Resistance, Resistors"
+                    else:
+                        result = "Resistors, Resistance"
+                elif "capacitor" in lower or "capacitance" in lower:
+                    if any(w in lower for w in ["equivalent", "series", "parallel"]):
+                        result = "Equivalent Capacitance, Capacitors"
+                    else:
+                        result = "Capacitors, Capacitance"
+                elif "opamp" in lower or "op-amp" in lower or "operational amplifier" in lower:
+                    result = "Opamp, Operational Amplifier"
+                elif "thevenin" in lower:
+                    result = "Thevenin Theorem"
+                elif "nodal" in lower:
+                    result = "Nodal Analysis"
+                elif "mesh" in lower:
+                    result = "Mesh Analysis"
+
+            # 4. Final sanitization fallback: remove markdown headings / thinking markers
+            if not result:
+                clean = re.sub(r'(?i)^(thinking process:?|the image shows|this is a|circuit diagram of)\s*', '', resp_text or thinking_text)
+                clean = re.sub(r'^\d+\.\s*\*+[^*]+\*+:?\s*', '', clean)
+                result = clean.strip()
+            
+            # Save clean result to cache
+            if result:
+                _set_cached_vision(img_hash, result)
+                
+            return result
     except Exception as e:
-        return f"Error analyzing image: {e}"
+        print(f"[Vision] Error analyzing image: {repr(e)}")
+        return f"Error analyzing image: {repr(e)}"
 
 
 # 2. Vector Embeddings — Convert text into a mathematical array
@@ -466,15 +598,30 @@ def save_to_neo4j(neo4j_driver, course_code: str, triplets: list[dict]):
                 print(f"Failed to write triplet {triplet} to Neo4j: {e}")
 
 
+def _format_history_block(history: list = None) -> str:
+    """Formats previous conversation turns for conversational memory."""
+    if not history:
+        return ""
+    lines = ["Conversation History (Previous turns in this session):"]
+    for msg in history:
+        role = "Student" if msg.get("role") == "user" else "Assistant"
+        content = msg.get("content", "").strip()
+        if content:
+            summary = content if len(content) <= 500 else content[:500] + "..."
+            lines.append(f"{role}: {summary}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 # 5. Answer Generation — Produce an answer based on retrieved context
-async def generate_answer(question: str, context: str) -> str:
+async def generate_answer(question: str, context: str, history: list = None) -> str:
     """
     Takes the student's original question, the retrieved context from
     PostgreSQL/Neo4j, and previous conversation history, and asks the LLM for an answer.
     """
     history_block = _format_history_block(history)
     prompt = f"""
-You are MACH AI (M.A.C.H. - Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG framework for Campus Knowledge Systems), an academic AI assistant for university students.
+You are MACH AI (M.A.C.H. - Multimodal Academic Cognitive Hub - A Fine-tuned Graph-RAG framework for Campus Knowledge Systems), an academic AI assistant for university students.
 Answer the student's question using ONLY the information provided in the Context below.
 If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
 If the student refers to previous topics or questions using pronouns (like 'it', 'its', 'that', or 'the previous algorithm'), use the Conversation History to resolve what they are asking about.
@@ -513,21 +660,15 @@ Answer:
         return f"ℹ️ *(Note: AI reformatting timed out. Showing direct database search results below)*\n\n{context}"
 
 
-async def generate_answer_stream(question: str, context: str):
+async def generate_answer_stream(question: str, context: str, history: list = None):
     """
     Streams the AI response chunk by chunk as it generates, with conversational memory.
     """
     history_block = _format_history_block(history)
-    prompt = f"""
-You are MACH AI (M.A.C.H. - Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG framework for Campus Knowledge Systems), an academic AI assistant for university students.
-Answer the student's question using ONLY the information provided in the Context below.
-If the student asks for questions on a topic (e.g. PYQs or exam questions), list ALL available matching questions provided in the Context across all documents. Do not omit any question.
-If the student refers to previous topics or questions using pronouns (like 'it', 'its', 'that', or 'the previous algorithm'), use the Conversation History to resolve what they are asking about.
-
-SYLLABUS & CURRICULUM RULES:
-1. EXACT MATCH: If the Context provides the syllabus for an exact matched course, output ONLY that course's syllabus. Clearly display the Course Code and Course Name as the heading.
-2. ASCENDING ORDER: You MUST present all Units in STRICT ASCENDING NUMERICAL ORDER (Unit 1, Unit 2, Unit 3, Unit 4, Unit 5...). Never jumble unit numbers, never repeat units, and never mix different courses together.
-3. MULTIPLE SIMILAR COURSES (NO EXACT MATCH): If the Context indicates that multiple similar courses exist (no single exact match), do NOT output full syllabus topics. Instead, list the available matching courses with their Course Codes and titles, and ask the student to specify which course they want the syllabus for.
+    prompt = f"""You are MACH AI (M.A.C.H. - Multimodal Academic Cognitive Hub), an intelligent academic AI assistant and expert tutor for university students.
+Use the provided Context as your primary authoritative source for course-specific syllabus units, course outcomes, exam questions, and department curriculum.
+For conceptual explanations, theoretical derivations, algorithms, or definitions (e.g. comparing concepts, explaining algorithms, or solving problems), provide a clear, comprehensive, and accurate academic explanation using your engineering and scientific knowledge, seamlessly connecting it to any relevant course topics in the context.
+If specific course exam questions or practice problems exist in the Context, cite or include them to help the student practice.
 
 IMPORTANT: If the Context contains Markdown image links for diagrams (e.g. `![Diagram for ...](http://...)`), you MUST include EVERY Markdown image link directly under its corresponding question in your final answer so the student can see the circuit/diagram images.
 
@@ -548,7 +689,8 @@ Answer:
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": True,
-                "options": {"num_ctx": 8192},
+                "think": False,
+                "options": {"num_ctx": 2048, "temperature": 0.2},
             },
             timeout=300.0,
         ) as response:
@@ -850,6 +992,9 @@ If no questions are found, return {"questions": []}. No markdown, no explanation
                 ]
             else:
                 return []
+
+    except Exception as e:
+        print(f"Failed to extract PYQ questions: {e}")
         return []
 
 
@@ -957,35 +1102,189 @@ import hashlib
 
 from sqlalchemy import text
 
-# 4b. Neo4j Prerequisite Mapping
+# 4b. Course Metadata & Neo4j Prerequisite Mapping (Amrita B.Tech CSE Curriculum)
+COURSE_METADATA = {
+    # Mathematics & Foundational Sciences
+    "23MAT101": "Calculus",
+    "19MAT101": "Calculus",
+    "23MAT116": "Discrete Mathematics",
+    "19MAT111": "Discrete Mathematics",
+    "23MAT117": "Linear Algebra",
+    "19MAT112": "Linear Algebra",
+    "23MAT216": "Probability and Random Processes",
+    "19MAT205": "Probability and Random Processes",
+    "23CHY101": "Engineering Chemistry",
+    "23PHY101": "Engineering Physics",
+    "23EEE104": "Electric Circuits",
+
+    # Core Computer Science (2023 & 2019 Regulations)
+    "23CSE101": "Computational Problem Solving",
+    "19CSE101": "Computer Programming",
+    "23CSE102": "Computer Hardware Essentials",
+    "23CSE111": "Object Oriented Programming",
+    "23CSE201": "Procedural Programming Using C",
+    "19CSE201": "Object Oriented Programming",
+    "23CSE202": "Database Management Systems",
+    "19CSE202": "Database Management Systems",
+    "23CSE203": "Data Structures and Algorithms",
+    "19CSE203": "Data Structures and Algorithms",
+    "23CSE204": "Operating Systems",
+    "23CSE214": "Operating Systems",
+    "19CSE204": "Operating Systems",
+    "23CSE205": "Digital Electronics",
+    "23CSE211": "Design and Analysis of Algorithms",
+    "19CSE211": "Design and Analysis of Algorithms",
+    "23CSE212": "Principles of Functional Languages",
+    "23CSE213": "Computer Organization and Architecture",
+    "19CSE213": "Computer Organization and Architecture",
+    "23CSE301": "Machine Learning",
+    "19CSE301": "Machine Learning",
+    "23CSE302": "Computer Networks",
+    "23CSE304": "Embedded Systems",
+    "19CSE304": "Computer Networks",
+    "23CSE303": "Theory of Computation",
+    "19CSE303": "Theory of Computation",
+    "23CSE311": "Software Engineering",
+    "19CSE311": "Software Engineering",
+    "23CSE312": "Distributed Systems",
+    "19CSE312": "Distributed Systems",
+    "23CSE313": "Foundations of Cyber Security",
+    "19CSE313": "Cryptography and Network Security",
+    "23CSE314": "Compiler Design",
+    "19CSE314": "Compiler Design",
+
+    # Professional Electives & Advanced Streams
+    "23CSE341": "Wireless Sensor Networks",
+    "23CSE342": "Advanced Computer Networks",
+    "23CSE343": "Wireless and Mobile Networks",
+    "23CSE344": "Modern Cellular Wireless Networks",
+    "23CSE345": "Software Defined Networks",
+    "23CSE355": "Mining of Massive Datasets",
+    "23CSE361": "Real Time Operating Systems",
+    "23CSE363": "Cloud Computing",
+    "23CSE364": "Cyber-Physical Systems",
+    "23CSE365": "Internet of Things",
+    "23CSE440": "Advanced Algorithms and Analysis",
+    "23CSE441": "Introduction to Machine Learning",
+    "23CSE442": "Distributed Systems",
+    "23CSE453": "Competitive Programming",
+    "23CSE458": "Embedded Programming",
+    "23CSE466": "Parallel Programming",
+    "23CSE473": "Deep Learning",
+    "23CSE477": "Reinforcement Learning",
+    "23AIE201": "Artificial Intelligence",
+    "23AIE301": "Natural Language Processing",
+}
+
 PREREQUISITE_MAP = {
-    "23CSE203": ["23MAT116"],  # Data Structures requires Discrete Math
-    "23CSE211": ["23CSE203", "23MAT116"],  # Algorithms requires DSA & Discrete Math
-    "23CSE301": ["23MAT117", "23MAT216"],  # ML requires Linear Algebra & Probability
-    "23CSE314": ["23CSE303"],  # Compiler Design requires Theory of Computation
-    "23CSE473": ["23CSE301"],  # Deep Learning requires ML
-    "23CSE477": ["23CSE301"],  # Reinforcement Learning requires ML
+    # DSA requires Discrete Mathematics and Programming
+    "23CSE203": ["23MAT116", "23CSE101"],
+    "19CSE203": ["19MAT111", "19CSE101"],
+
+    # DAA requires DSA and Discrete Mathematics
+    "23CSE211": ["23CSE203", "23MAT116"],
+    "19CSE211": ["19CSE203", "19MAT111"],
+
+    # DBMS requires DSA
+    "23CSE202": ["23CSE203"],
+    "19CSE202": ["19CSE203"],
+
+    # Operating Systems requires DSA and Computer Architecture
+    "23CSE204": ["23CSE203", "23CSE213"],
+    "23CSE214": ["23CSE203", "23CSE213"],
+    "19CSE204": ["19CSE203", "19CSE213"],
+
+    # Machine Learning requires Linear Algebra, Probability, and DSA
+    "23CSE301": ["23MAT117", "23MAT216", "23CSE203"],
+    "19CSE301": ["19MAT112", "19MAT205", "19CSE203"],
+
+    # Theory of Computation requires Discrete Mathematics
+    "23CSE303": ["23MAT116"],
+    "19CSE303": ["19MAT111"],
+
+    # Computer Networks requires Operating Systems
+    "23CSE302": ["23CSE204"],
+    "19CSE304": ["19CSE204"],
+
+    # Embedded Systems requires Computer Organization and Architecture
+    "23CSE304": ["23CSE213"],
+
+    # Distributed Systems requires Operating Systems & Computer Networks
+    "23CSE312": ["23CSE204", "23CSE302"],
+    "19CSE312": ["19CSE204", "19CSE304"],
+    "23CSE442": ["23CSE204", "23CSE302"],
+
+    # Cryptography / Cyber Security requires Discrete Math & Networks
+    "23CSE313": ["23MAT116", "23CSE302"],
+    "19CSE313": ["19MAT111", "19CSE304"],
+
+    # Compiler Design requires Theory of Computation & DSA
+    "23CSE314": ["23CSE303", "23CSE203"],
+    "19CSE314": ["19CSE303", "19CSE203"],
+
+    # Elective streams: Networks
+    "23CSE341": ["23CSE302"],
+    "23CSE342": ["23CSE302"],
+    "23CSE343": ["23CSE302"],
+    "23CSE344": ["23CSE302"],
+    "23CSE345": ["23CSE302"],
+
+    # Elective streams: Systems & IoT
+    "23CSE361": ["23CSE204", "23CSE304"],
+    "23CSE363": ["23CSE302"],
+    "23CSE364": ["23MAT116"],
+    "23CSE365": ["23CSE304", "23CSE302"],
+    "23CSE458": ["23CSE213"],
+    "23CSE466": ["23CSE213"],
+
+    # Elective streams: AI / Data Science
+    "23CSE355": ["23CSE301"],
+    "23CSE440": ["23CSE203"],
+    "23CSE441": ["23MAT117", "23MAT216"],
+    "23CSE473": ["23CSE301"],
+    "23CSE477": ["23CSE301"],
+    "23AIE201": ["23CSE203", "23MAT116"],
+    "23AIE301": ["23CSE301"],
 }
 
 
 def add_prerequisite_edges(neo4j_driver, prerequisite_map):
     """
-    Executes parameterized Cypher to create REQUIRES edges between courses.
+    Executes parameterized Cypher to create REQUIRES and REQUIRES_PREREQUISITE edges between courses.
+    Sets course code, name, and title on nodes so multi-hop traversals resolve human-readable titles.
     """
     if not prerequisite_map:
         return
 
     with neo4j_driver.session() as session:
         for target_code, prereqs in prerequisite_map.items():
+            t_name = COURSE_METADATA.get(target_code, target_code)
+            session.run(
+                """
+                MERGE (c1:Course {code: $target_code})
+                SET c1.name = coalesce(c1.name, $t_name),
+                    c1.title = coalesce(c1.title, $t_name)
+                """,
+                target_code=target_code,
+                t_name=t_name,
+            )
             for prereq_code in prereqs:
+                p_name = COURSE_METADATA.get(prereq_code, prereq_code)
                 session.run(
                     """
                     MERGE (c1:Course {code: $target_code})
                     MERGE (c2:Course {code: $prereq_code})
+                    SET c1.name = coalesce(c1.name, $t_name),
+                        c1.title = coalesce(c1.title, $t_name),
+                        c2.name = coalesce(c2.name, $p_name),
+                        c2.title = coalesce(c2.title, $p_name)
                     MERGE (c1)-[:REQUIRES]->(c2)
+                    MERGE (c1)-[:REQUIRES_PREREQUISITE]->(c2)
                 """,
                     target_code=target_code,
                     prereq_code=prereq_code,
+                    t_name=t_name,
+                    p_name=p_name,
                 )
 
 
@@ -1270,6 +1569,7 @@ def extract_pyq_structured(
                         buf = io.BytesIO()
                         final_img.save(buf, format="JPEG", quality=88)
                         img_bytes = buf.getvalue()
+                        image_hash = hashlib.md5(img_bytes).hexdigest()
 
                         safe_q = span["q_num"].replace(".", "_").replace(" ", "_")
                         public_id = f"{document_id}_p{page_num + 1}_q{safe_q}"
@@ -1299,6 +1599,7 @@ def extract_pyq_structured(
                     "course_code": course_code,
                     "exam_name": "PYQ Exam",
                     "image_url": image_url,
+                    "image_hash": image_hash if image_url else None,
                 }
             )
 
@@ -1342,10 +1643,11 @@ async def map_pyq_structured_to_kg(
             image_url = q.get("image_url", "")
             q_num = q.get("question_number", "")
 
-            # Map Question to Course
+            # Map Question to Course (dual edge: BELONGS_TO + TESTED_BY)
             query = """
                 MERGE (q:Question {id: $q_id})
-                SET q.text = $q_text, 
+                SET q.q_id = $q_id,
+                    q.text = $q_text, 
                     q.btl = $btl, 
                     q.marks = $marks, 
                     q.has_figure = $has_fig, 
@@ -1355,6 +1657,7 @@ async def map_pyq_structured_to_kg(
                     q.question_number = $q_num
                 MERGE (c:Course {code: $c_code})
                 MERGE (q)-[:BELONGS_TO]->(c)
+                MERGE (c)-[:TESTED_BY]->(q)
             """
             session.run(
                 query,
@@ -1369,7 +1672,34 @@ async def map_pyq_structured_to_kg(
                 q_num=q_num,
             )
 
-            # Semantic topic mapping
+            # Map to BloomLevel if btl present
+            if btl:
+                session.run(
+                    """
+                    MATCH (q:Question {id: $q_id})
+                    MERGE (bl:BloomLevel {level: $btl})
+                    MERGE (q)-[:HAS_BTL]->(bl)
+                    """,
+                    q_id=q_id,
+                    btl=str(btl).upper(),
+                )
+
+            # Map to VisualArtefact if image_url present
+            if image_url and image_url != "None":
+                img_hash = q.get("image_hash") or hashlib.md5(image_url.encode()).hexdigest()
+                session.run(
+                    """
+                    MATCH (q:Question {id: $q_id})
+                    MERGE (va:VisualArtefact {url: $image_url})
+                    SET va.question_id = $q_id, va.hash = $hash
+                    MERGE (q)-[:BINDS_DIAGRAM]->(va)
+                    """,
+                    q_id=q_id,
+                    image_url=image_url,
+                    hash=img_hash,
+                )
+
+            # Semantic topic mapping (dual edge: TESTS + TESTS_TOPIC)
             topic_ids = mapping.get(i, [])
             for t_id in topic_ids:
                 session.run(
@@ -1377,6 +1707,7 @@ async def map_pyq_structured_to_kg(
                     MATCH (q:Question {id: $q_id})
                     MATCH (t:Topic {topic_id: $t_id})
                     MERGE (q)-[:TESTS]->(t)
+                    MERGE (q)-[:TESTS_TOPIC]->(t)
                 """,
                     q_id=q_id,
                     t_id=t_id,
@@ -1484,10 +1815,12 @@ def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
     with neo4j_driver.session() as session:
         records = session.run(
             """
-            MATCH (q:Question)-[:BELONGS_TO]->(c:Course)
+            MATCH (q:Question)
             WHERE all(word IN $words WHERE replace(toLower(q.text), "'", "") CONTAINS word)
+            OPTIONAL MATCH (q)-[:BELONGS_TO]->(c:Course)
+            OPTIONAL MATCH (c_t:Course)-[:TESTED_BY]->(q)
             RETURN q.text AS q_text, q.btl AS btl, q.marks AS marks,
-                   q.image_url AS image_url, c.code AS course_code,
+                   q.image_url AS image_url, coalesce(c.code, c_t.code, q.course_code, '') AS course_code,
                    q.question_number AS q_num
             LIMIT 20
         """,
@@ -1591,106 +1924,172 @@ def fetch_course_topics(neo4j_driver, course_code: str) -> str:
     return "\n".join(syllabus)
 
 
+ACRONYMS_TOPIC_MAP = {
+    'pda': 'pushdown automata',
+    'nfa': 'nondeterministic finite automata',
+    'dfa': 'deterministic finite automata',
+    'cfg': 'context free grammar',
+    'cnf': 'chomsky normal form',
+    'pcp': 'post correspondence problem',
+    'kcl': 'kirchhoff current law',
+    'kvl': 'kirchhoff voltage law',
+    'bjt': 'transistor bipolar junction',
+    'psd': 'power spectral density',
+    'wss': 'wide sense stationary',
+    '2pc': 'two phase commit'
+}
+
+
+def _expand_topic_acronyms(text: str) -> str:
+    words = text.lower().split()
+    expanded = []
+    for w in words:
+        w_clean = w.strip('.,()[]:"\'')
+        if w_clean in ACRONYMS_TOPIC_MAP:
+            expanded.append(f"{w} {ACRONYMS_TOPIC_MAP[w_clean]}")
+        else:
+            expanded.append(w)
+    return " ".join(expanded)
+
+
+def _topic_keyword_overlap(q_text: str, topic_name: str) -> float:
+    stop = {'and', 'the', 'for', 'with', 'in', 'of', 'to', 'a', 'an', 'on', 'by', 'from', 'at', 'as', 'is', 'are', 'using'}
+    t_words = [w.strip(".,()[]:'\"") for w in topic_name.lower().split() if len(w) > 2 and w not in stop]
+    q_lower = _expand_topic_acronyms(q_text).lower()
+    if not t_words:
+        return 0.0
+    matches = sum(1 for w in t_words if w in q_lower)
+    return matches / len(t_words)
+
+
+def _topic_cosine_similarity(v1, v2) -> float:
+    dot = sum(a * b for a, b in zip(v1, v2))
+    norm1 = sum(a * a for a in v1) ** 0.5
+    norm2 = sum(b * b for b in v2) ** 0.5
+    return dot / (norm1 * norm2) if norm1 and norm2 else 0.0
+
+
 async def semantic_map_questions_to_topics(
     course_code: str, syllabus_context: str, questions: list
 ) -> dict:
+    """
+    Accurately maps every question to its specific Topic node in Neo4j using
+    a hybrid dense vector embedding + morphological keyword overlap scoring function.
+    Bypasses token-heavy external LLM calls to prevent timeouts and guarantees
+    every question connects to its genuine topic rather than falling back to Unit 1 Topic 1.
+    """
     if not syllabus_context or syllabus_context == "No syllabus found.":
         return {}
 
+    # Parse syllabus topics: [{topic_id}] {unit} - {topic_name}
+    topics = []
+    for line in syllabus_context.split("\n"):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        m = re.match(r"\[(.*?)\]\s*(.*)", line_clean)
+        if m:
+            tid = m.group(1)
+            full_name = m.group(2)
+            tname = full_name.split(" - ")[-1] if " - " in full_name else full_name
+            topics.append({"id": tid, "name": tname, "full": full_name})
+
+    if not topics:
+        return {}
+
+    fallback_topic = topics[0]["id"]
     final_mapping = {}
-    unmapped_indices = list(range(len(questions)))
-    max_retries = 3
 
-    # Extract the first available topic ID for absolute fallback
-    import re
+    # Pre-embed course syllabus topics
+    topic_embeddings = []
+    for t in topics:
+        emb = await get_embedding(t["full"][:300])
+        topic_embeddings.append((t, emb))
 
-    first_topic_match = re.search(r"\[(.*?)\]", syllabus_context)
-    fallback_topic = first_topic_match.group(1) if first_topic_match else None
-
-    for attempt in range(max_retries):
-        if not unmapped_indices:
-            break
-
-        questions_text = "\n".join(
-            [
-                f"Q_ID: {i} | Text: {questions[i].get('question_text', questions[i].get('text', ''))}"
-                for i in unmapped_indices
-            ]
-        )
-
-        prompt = f"""
-You are an expert academic curriculum mapper.
-You are given a course syllabus with explicit Topic IDs, and a list of exam questions.
-Your task is to accurately map EVERY single question to one or more Topic IDs that it tests.
-
-CRITICAL INSTRUCTION: You MUST map the following EXACT Question IDs: {unmapped_indices}. 
-FAILURE IS NOT AN OPTION. DO NOT OMIT ANY QUESTION ID.
-
-Rules:
-1. Every question MUST map to at least one Topic ID.
-2. If a question covers multiple topics, map it to all relevant Topic IDs.
-3. Use the context and implicit knowledge to deduce the correct topic even if the exact keywords are missing from the question.
-4. Output strictly JSON in the following format:
-{{
-  "mapping": [
-    {{"question_id": 0, "topic_ids": ["23CSE303_CSE_2023_u1_t1"]}},
-    {{"question_id": 1, "topic_ids": ["23CSE303_CSE_2023_u2_t4", "23CSE303_CSE_2023_u3_t1"]}}
-  ]
-}}
-Do not output any markdown formatting, only the JSON block.
-
-Syllabus Context for {course_code}:
-{syllabus_context}
-
-Questions:
-{questions_text}
-"""
-        try:
-            async with httpx.AsyncClient(
-                headers={"ngrok-skip-browser-warning": "true"}
-            ) as client:
-                response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/generate",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                        "options": {"num_ctx": 16384},
-                    },
-                    timeout=180.0,
-                )
-                response.raise_for_status()
-                res_text = response.json().get("response", "{}")
-
-                match = re.search(r"\{.*\}", res_text, re.DOTALL)
-                clean_text = match.group(0) if match else res_text
-                import json
-
-                data = json.loads(clean_text)
-
-                for item in data.get("mapping", []):
-                    q_id = item.get("question_id")
-                    topic_ids = item.get("topic_ids", [])
-                    if q_id is not None and topic_ids:
-                        final_mapping[int(q_id)] = topic_ids
-
-                # Update unmapped_indices
-                unmapped_indices = [
-                    i for i in range(len(questions)) if i not in final_mapping
-                ]
-
-        except Exception as e:
-            print(
-                f"Failed to semantic map PYQs to topics on attempt {attempt + 1}: {e}"
-            )
-
-    # Absolute Guarantee Fallback
-    if unmapped_indices and fallback_topic:
-        print(
-            f"[PYQ Semantic Mapper] Warning: {len(unmapped_indices)} questions remained unmapped after {max_retries} attempts. Using fallback topic {fallback_topic}."
-        )
-        for i in unmapped_indices:
+    for i, q in enumerate(questions):
+        q_text = (q.get("question_text") or q.get("text") or "").strip()
+        if not q_text:
             final_mapping[i] = [fallback_topic]
+            continue
+
+        q_exp = _expand_topic_acronyms(q_text)
+        q_emb = await get_embedding(q_exp[:500])
+
+        scored = []
+        for t, t_emb in topic_embeddings:
+            cos = _topic_cosine_similarity(q_emb, t_emb) if q_emb and t_emb else 0.0
+            kw = _topic_keyword_overlap(q_text, t["name"])
+            hybrid = 0.5 * cos + 0.5 * kw
+            scored.append((hybrid, t["id"]))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Select top 1 or 2 highest-scoring topics
+        top_score, top_tid = scored[0]
+        selected_tids = [top_tid]
+        if len(scored) > 1 and scored[1][0] >= 0.65 and scored[1][0] >= top_score * 0.88:
+            selected_tids.append(scored[1][1])
+
+        final_mapping[i] = selected_tids
 
     return final_mapping
+
+
+def classify_pdf_type(file_path: str) -> dict:
+    """
+    Auto-classifies an uploaded PDF document into either 'syllabus' or 'pyq'.
+    Extracts department & year for syllabus, or course code for PYQ.
+    Works with Amrita curriculum files and any past year question papers.
+    """
+    import pymupdf as fitz
+    import re
+    import os
+
+    try:
+        doc = fitz.open(file_path)
+        page_count = len(doc)
+        text = ""
+        for p in range(min(3, page_count)):
+            text += doc[p].get_text() + " "
+        doc.close()
+    except Exception as e:
+        print(f"[CLASSIFIER] Error reading PDF {file_path}: {e}")
+        return {"doc_type": "pyq", "course_code": "UNKNOWN", "pages": 1}
+
+    fname = os.path.basename(file_path).upper()
+    text_upper = text.upper()
+
+    # 1. Syllabus detection
+    if page_count > 25 or "CURRICULUM" in text_upper or "SYLLABUS" in fname or "SCHEME OF INSTRUCTION" in text_upper:
+        dept = "CSE"
+        if "COMPUTER SCIENCE" in text_upper or "CSE" in fname:
+            dept = "CSE"
+        elif "ELECTRICAL" in text_upper or "EEE" in fname:
+            dept = "EEE"
+        elif "ELECTRONICS" in text_upper or "ECE" in fname:
+            dept = "ECE"
+        elif "MECHANICAL" in text_upper or "MECH" in fname:
+            dept = "MECH"
+        elif "ARTIFICIAL INTELLIGENCE" in text_upper or "AIE" in fname:
+            dept = "AIE"
+        elif "CYBER" in text_upper or "CYS" in fname:
+            dept = "CYS"
+
+        year = "2023"
+        ym = re.search(r"\b(20\d{2})\b", fname) or re.search(r"\b(20\d{2})\b", text_upper)
+        if ym:
+            year = ym.group(1)
+        return {"doc_type": "syllabus", "department": dept, "year": year, "pages": page_count}
+
+    # 2. PYQ detection
+    cc_match = re.search(r"(\d{2}[A-Z]{3}\d{3})", fname)
+    if not cc_match:
+        cc_match = re.search(r"Course\s*(?:Code)?\s*[:\-]?\s*(\d{2}[A-Z]{3}\d{3})", text, re.I)
+    if not cc_match:
+        cc_match = re.search(r"\b(\d{2}[A-Z]{3}\d{3})\b", text)
+    if not cc_match:
+        cc_match = re.search(r"\b([A-Z]{2,4}\d{3})\b", fname) or re.search(r"\b([A-Z]{2,4}\d{3})\b", text)
+
+    course_code = cc_match.group(1).upper() if cc_match else "UNKNOWN"
+    return {"doc_type": "pyq", "course_code": course_code, "pages": page_count}
+

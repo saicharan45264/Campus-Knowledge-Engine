@@ -101,9 +101,9 @@
         </div>
         <div class="docs-table-wrap">
           <table class="docs-table">
-            <thead><tr><th>Course Code</th><th>Type</th><th>Filename</th><th>Uploaded</th><th></th></tr></thead>
+            <thead><tr><th>Course / Dept</th><th>Type</th><th>Filename</th><th>Extraction Status</th><th>Uploaded</th><th></th></tr></thead>
             <tbody id="documents-table-body">
-              <tr><td colspan="5" style="text-align:center;color:var(--text-4);padding:20px;">Loading…</td></tr>
+              <tr><td colspan="6" style="text-align:center;color:var(--text-4);padding:20px;">Loading…</td></tr>
             </tbody>
           </table>
         </div>
@@ -115,31 +115,31 @@
       <div class="panel">
         <div class="panel-head">
           <div class="panel-head-left">
-            <h3>Upload Document</h3>
-            <p>Add syllabus PDFs or PYQ papers to the knowledge graph</p>
+            <h3>Smart Bulk Document Ingestion</h3>
+            <p>Upload any Syllabus PDF or Past Year Question papers (Single or Bulk batch). Auto-extracts course codes, diagrams, and maps to the Neo4j Knowledge Graph.</p>
           </div>
-          <span class="panel-tag">Ingest</span>
+          <span class="panel-tag">Auto-Graph Ingest</span>
         </div>
 
         <div class="field-row">
-          <div class="field">
-            <label>Document Type</label>
+          <div class="field" style="flex:1;">
+            <label>Ingestion Mode</label>
             <select id="doc-type" onchange="window.docTypeChanged()">
-              <option value="">Select type…</option>
-              <option value="syllabus">Syllabus</option>
+              <option value="auto" selected>✨ Auto-Detect (Syllabus or PYQs)</option>
               <option value="pyq">Past Year Questions (PYQ)</option>
+              <option value="syllabus">Curriculum &amp; Syllabus</option>
             </select>
           </div>
-          <div class="field" id="course-code-field" style="display: none;">
-            <label>Course Code</label>
-            <input type="text" id="course-code" placeholder="e.g. CS301">
+          <div class="field" id="course-code-field" style="display: none; flex:1;">
+            <label>Course Code (Optional Override)</label>
+            <input type="text" id="course-code" placeholder="e.g. 23EEE104">
           </div>
-          <div class="field" id="dept-field" style="display: none;">
-            <label>Department</label>
+          <div class="field" id="dept-field" style="display: none; flex:1;">
+            <label>Department (Optional Override)</label>
             <input type="text" id="dept" placeholder="e.g. CSE">
           </div>
-          <div class="field" id="year-field" style="display: none;">
-            <label>Year</label>
+          <div class="field" id="year-field" style="display: none; flex:1;">
+            <label>Year (Optional Override)</label>
             <input type="text" id="year" placeholder="e.g. 2023">
           </div>
         </div>
@@ -147,15 +147,20 @@
         <div class="dropzone" id="dropzone"
           ondragover="window.dzOver(event)" ondragleave="window.dzLeave(event)" ondrop="window.dzDrop(event)">
           <input type="file" accept=".pdf" id="file-input" multiple onchange="window.fileSelected(this)">
-          <div class="dz-icon"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-          <div class="dz-text">Drop PDF here or <u>browse</u></div>
-          <div class="dz-hint">Supports PDF files up to 50 MB</div>
+          <div class="dz-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+          <div class="dz-text">Drop PDF files here or <u>browse</u></div>
+          <div class="dz-hint">Bulk upload supported · Auto-classifies Syllabus &amp; PYQs · Diagrams &amp; circuits auto-extracted</div>
           <div class="dz-filename" id="dz-filename"></div>
+        </div>
+
+        <div id="file-queue-preview" style="margin-top:14px; display:none;">
+          <div style="font-size:12.5px; font-weight:600; color:var(--text-2); margin-bottom:6px;">Files to Ingest:</div>
+          <div id="file-queue-list" style="display:flex; flex-direction:column; gap:6px;"></div>
         </div>
 
         <div class="prog-wrap" id="prog-wrap">
           <div class="prog-info">
-            <span id="prog-label">Uploading…</span>
+            <span id="prog-label">Uploading &amp; Ingesting…</span>
             <span id="prog-pct">0%</span>
           </div>
           <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
@@ -163,7 +168,7 @@
 
         <div class="upload-ok" id="upload-ok">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          Document indexed successfully into the knowledge base.
+          <span id="upload-ok-msg">Documents queued and indexing into Neo4j &amp; Vector DB!</span>
         </div>
         <div class="upload-error" id="upload-error">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -172,7 +177,7 @@
 
         <button class="btn-upload" id="upload-btn" onclick="window.doUpload()">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          Upload &amp; Index
+          Start Ingestion
         </button>
       </div>
     </div>

@@ -26,7 +26,7 @@ PAGE_OTHER = "OTHER"
 
 # Patterns compiled once at module level
 _COURSE_HEADER_RE = re.compile(
-    r"^(\d{2}[A-Z]{3}\d{3})\s+(.*?)\s+L-T-P-C\s*:\s*([\d\[\]-]+)-([\d\[\]-]+)-([\d\[\]-]+)-([\d\[\]-]+)",
+    r"^\s*(\d{2}[A-Z]{3}\d{3})\s+(.*?)\s+L-T-P-C\s*:\s*([\d\[\]-]+)-([\d\[\]-]+)-([\d\[\]-]+)-([\d\[\]-]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 _COURSE_CODE_RE = re.compile(r"\b\d{2}[A-Z]{3}\d{3}\b", re.IGNORECASE)
@@ -42,9 +42,11 @@ _SEMESTER_HDR_RE = re.compile(
     r"Semester\s*(I{1,3}V?|VI{0,3}|IX|X{0,2}I{0,3}|\d+)", re.IGNORECASE
 )
 _BASKET_HDR_RE = re.compile(
-    r"(?:Electives?\s+in|Professional\s+Electives?\s*[-–]?|Science\s+Electives?|"
-    r"Free\s+Electives?|General\s+Electives?|Amrita\s+Value|Mandatory\s+Course)",
-    re.IGNORECASE,
+    r"^\s*(?:Electives?\s+in\s+[A-Za-z\s]+|General\s+Electives|Professional\s+Electives\s+for\s+Other\s+Branches|"
+    r"List\s+of\s+courses\s+in\s+Amrita\s+Value\s+Programme(?:\s+I\s*&\s*II)?|Amrita\s+Value\s+Programme(?:\s+I\s*&\s*II)?|"
+    r"PROFESSIONAL\s+ELECTIVES\s+UNDER\s+SCIENCE\s+STREAM|"
+    r"FREE\s+ELECTIVES\s+OFFERED\s+UNDER\s+[A-Za-z\s/]+STREAM(?:S)?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 _STOP_SECTION_RE = re.compile(
     r"^(?:TEXTBOOK|TEXT\s*BOOK|REFERENCE|ESSENTIAL\s+READING|Evaluation\s+Pattern|"
@@ -114,12 +116,15 @@ def _classify_page(page_num: int, text: str) -> str:
         ]
     ):
         return PAGE_GENERAL_INFO
-    if _BASKET_HDR_RE.search(text):
-        return PAGE_ELECTIVE
+    # Check COURSE_DETAIL before elective baskets so individual course syllabus pages are not hijacked as PAGE_ELECTIVE
     if _COURSE_HEADER_RE.search(text):
         return PAGE_COURSE_DETAIL
+    # Semester tables (Semester I to VIII)
     if _SEMESTER_HDR_RE.search(text) and _COURSE_CODE_RE.search(text):
         return PAGE_SEMESTER_TABLE
+    # Elective baskets overview tables
+    if _BASKET_HDR_RE.search(text):
+        return PAGE_ELECTIVE
     if any(
         k in tu
         for k in [
@@ -151,7 +156,7 @@ def phase1_fast_pass(doc):
 
 # Only run find_tables() on pages where structural tables are critical
 # (not COURSE_DETAIL — those need per-course inline detection for CO-PO)
-_TABLE_PAGES = {PAGE_SEMESTER_TABLE, PAGE_GENERAL_INFO}
+_TABLE_PAGES = {PAGE_SEMESTER_TABLE, PAGE_GENERAL_INFO, PAGE_ELECTIVE}
 
 
 def phase2_table_pass(doc, page_type_idx: dict):
@@ -439,68 +444,160 @@ def _parse_semester_tables(page_texts, page_type_idx, page_tables) -> list:
 
 
 def _parse_elective_baskets(page_texts, page_type_idx, page_tables) -> list:
+    """
+    Extract elective baskets and their constituent courses.
+    Handles multiple baskets per page (e.g. Page 7, 8) and multi-page continuation
+    (e.g. General Electives spanning pages 8 and 9) using spatial y0 ordering.
+    """
     baskets = {}
-    for page_num, ptype in page_type_idx.items():
-        if ptype != PAGE_ELECTIVE:
-            continue
-        text = page_texts[page_num]
-        tables = page_tables.get(page_num, [])
+    current_basket = None
 
-        current_basket = None
-        for line in text.split("\n"):
-            bm = _BASKET_HDR_RE.search(line)
-            if bm:
-                basket_name = line.strip()
-                if basket_name not in baskets:
-                    baskets[basket_name] = {"name": basket_name, "courses": []}
-                current_basket = basket_name
+    def norm_basket_name(name: str) -> str:
+        name = re.sub(r"^List\s+of\s+courses\s+in\s+", "", name, flags=re.I)
+        name = re.sub(r"\s+", " ", name).strip()
+        if name.isupper():
+            name = name.title()
+        return name
 
-        for table in tables:
-            if not table or len(table) < 2:
-                continue
-            header = [str(c or "").strip().lower() for c in (table[0] or [])]
-            code_col = next((i for i, h in enumerate(header) if "code" in h), None)
-            title_col = next(
-                (i for i, h in enumerate(header) if "subject" in h or "title" in h),
-                None,
-            )
-            cat_col = next((i for i, h in enumerate(header) if "cat" in h), None)
-            credit_col = next((i for i, h in enumerate(header) if "credit" in h), None)
-            eval_col = next(
-                (i for i, h in enumerate(header) if "eval" in h or "pattern" in h), None
-            )
+    extra_early = [
+        p for p in range(4, min(15, len(page_texts)))
+        if page_type_idx.get(p) not in {PAGE_GENERAL_INFO, PAGE_COVER, PAGE_COURSE_DETAIL}
+    ]
+    elective_pages = sorted(
+        set(extra_early + [p for p, t in page_type_idx.items() if t == PAGE_ELECTIVE])
+    )
 
-            if code_col is None and title_col is None:
-                continue
+    for page_num in elective_pages:
+        raw_tables = []
+        blocks = []
+        if _live_doc is not None and page_num < len(_live_doc):
+            try:
+                page_obj = _live_doc[page_num]
+                found = page_obj.find_tables()
+                if found and found.tables:
+                    raw_tables = found.tables
+                blocks = page_obj.get_text("blocks")
+            except Exception as e:
+                print(f"[Parser] Live doc table extraction failed on page {page_num + 1}: {e}")
 
-            for row in table[1:]:
-                if not row:
+        items = []
+        if raw_tables:
+            for b in blocks:
+                if len(b) > 6 and b[6] == 0:
+                    text_block = b[4].strip()
+                    for line in text_block.splitlines():
+                        l_str = line.strip()
+                        if _BASKET_HDR_RE.match(l_str):
+                            items.append(("header", b[1], norm_basket_name(l_str)))
+            for ti, t in enumerate(raw_tables):
+                items.append(("table", t.bbox[1], t.extract()))
+            items.sort(key=lambda x: x[1])
+        else:
+            p_text = page_texts[page_num] if page_num < len(page_texts) else ""
+            for line in p_text.splitlines():
+                l_str = line.strip()
+                if _BASKET_HDR_RE.match(l_str):
+                    items.append(("header", 0, norm_basket_name(l_str)))
+            for rows in page_tables.get(page_num, []):
+                items.append(("table", 0, rows))
+
+        for item in items:
+            kind = item[0]
+            if kind == "header":
+                current_basket = item[2]
+            elif kind == "table":
+                rows = item[2]
+                if not rows:
                     continue
-                cells = [str(c or "").strip() for c in row]
-                max_col = max(x for x in [code_col, title_col] if x is not None)
-                if len(cells) <= max_col:
+
+                for r in rows[:3]:
+                    for cell in (r or []):
+                        cell_str = str(cell or "").strip()
+                        if cell_str and _BASKET_HDR_RE.match(cell_str):
+                            current_basket = norm_basket_name(cell_str)
+                            break
+                    if current_basket and any(_BASKET_HDR_RE.match(str(c or "").strip()) for c in (r or [])):
+                        break
+
+                if not current_basket:
                     continue
-                code = cells[code_col].strip() if code_col is not None else ""
-                title = cells[title_col].strip() if title_col is not None else ""
-                cat = cells[cat_col].strip() if cat_col is not None else ""
-                cred = cells[credit_col].strip() if credit_col is not None else ""
-                eval_ = cells[eval_col].strip() if eval_col is not None else ""
 
-                if not _COURSE_CODE_RE.match(code):
-                    continue
+                if current_basket not in baskets:
+                    baskets[current_basket] = {"name": current_basket, "courses": []}
 
-                entry = {
-                    "code": code.upper(),
-                    "title": title,
-                    "category": cat,
-                    "credits": cred,
-                    "evaluation_pattern_ratio": eval_,
-                }
+                code_col, title_col, cat_col, cred_col, eval_col = None, None, None, None, None
+                for ri, row in enumerate(rows[:5]):
+                    header = [str(c or "").strip().lower() for c in (row or [])]
+                    if any("code" in h for h in header) and any("title" in h or "subject" in h for h in header):
+                        code_col = next((i for i, h in enumerate(header) if "code" in h), None)
+                        title_col = next((i for i, h in enumerate(header) if "subject" in h or "title" in h), None)
+                        cat_col = next((i for i, h in enumerate(header) if "cat" in h), None)
+                        cred_col = next((i for i, h in enumerate(header) if "credit" in h), None)
+                        eval_col = next((i for i, h in enumerate(header) if "eval" in h or "pattern" in h), None)
+                        break
 
-                if current_basket and current_basket in baskets:
-                    baskets[current_basket]["courses"].append(entry)
-                elif baskets:
-                    list(baskets.values())[-1]["courses"].append(entry)
+                for row in rows:
+                    if not row:
+                        continue
+                    cells = [str(c or "").strip() for c in row]
+
+                    code = None
+                    code_idx = None
+                    if code_col is not None and code_col < len(cells) and _COURSE_CODE_RE.search(cells[code_col]):
+                        m = _COURSE_CODE_RE.search(cells[code_col])
+                        code = m.group(0).upper()
+                        code_idx = code_col
+                    else:
+                        for ci, cell in enumerate(cells):
+                            m = _COURSE_CODE_RE.search(cell)
+                            if m:
+                                code = m.group(0).upper()
+                                code_idx = ci
+                                break
+                    if not code:
+                        continue
+
+                    if code in {"23CSE401", "23CSE498", "23CSE499", "23LAW300"} and "Cyber Security" not in current_basket:
+                        continue
+
+                    title = ""
+                    if title_col is not None and title_col < len(cells) and title_col != code_idx:
+                        title = cells[title_col].replace("\n", " ").strip()
+                    elif code_idx is not None and code_idx + 1 < len(cells):
+                        title = cells[code_idx + 1].replace("\n", " ").strip()
+
+                    cat = ""
+                    if cat_col is not None and cat_col < len(cells):
+                        cat = cells[cat_col].strip()
+                    elif code_idx is not None and code_idx > 0:
+                        cat = cells[code_idx - 1].strip()
+
+                    cred = ""
+                    if cred_col is not None and cred_col < len(cells):
+                        cred = cells[cred_col].strip()
+                    else:
+                        for c in cells:
+                            if c in ["1", "2", "3", "4", "5", "6"]:
+                                cred = c
+                                break
+
+                    eval_ = ""
+                    if eval_col is not None and eval_col < len(cells):
+                        eval_ = cells[eval_col].strip()
+                    else:
+                        for c in cells:
+                            if ":" in c and re.match(r"^\d+:\d+$", c):
+                                eval_ = c
+                                break
+
+                    if not any(ec["code"] == code for ec in baskets[current_basket]["courses"]):
+                        baskets[current_basket]["courses"].append({
+                            "code": code,
+                            "title": title,
+                            "category": cat,
+                            "credits": cred,
+                            "evaluation_pattern_ratio": eval_,
+                        })
 
     return list(baskets.values())
 
@@ -886,9 +983,23 @@ def _write_neo4j(
         print(f"[Parser] Wiping old graph for {dept} {year}...")
         session.run(
             """
+            MATCH (n {syllabus_version_id: $sv_id})
+            DETACH DELETE n
+        """,
+            sv_id=sv_id,
+        )
+        session.run(
+            """
             MATCH (sv:SyllabusVersion {dept: $dept, year: $year})
-            OPTIONAL MATCH (sv)-[*0..12]->(n)
-            DETACH DELETE n, sv
+            DETACH DELETE sv
+        """,
+            dept=dept,
+            year=year,
+        )
+        session.run(
+            """
+            MATCH (c:Course {dept: $dept, year: $year})
+            DETACH DELETE c
         """,
             dept=dept,
             year=year,
@@ -986,15 +1097,33 @@ def _write_neo4j(
             )
 
             for c in sem.get("courses", []):
+                ratio = c.get("evaluation_pattern_ratio", "")
+                eval_int = None
+                eval_end = None
+                if ratio and ":" in ratio:
+                    parts = ratio.split(":")
+                    try:
+                        eval_int = int(parts[0].strip())
+                        eval_end = int(parts[1].strip())
+                    except Exception:
+                        pass
+
                 session.run(
                     """
                     MATCH (sem:Semester {number: $sem_num, syllabus_version_id: $sv_id})
+                    MATCH (sv:SyllabusVersion {dept: $dept, year: $year})
+                    MATCH (d:Department {name: $dept})
                     MERGE (c:Course {code: $code, dept: $dept, year: $year})
-                    SET c.title = $title, c.category = $cat,
+                    SET c.title = $title, c.name = coalesce(c.name, $title), c.category = $cat,
                         c.L = $L, c.T = $T, c.P = $P,
-                        c.credits = $cred,
-                        c.evaluation_pattern_ratio = $ep
+                        c.l = $L, c.t = $T, c.p = $P,
+                        c.credits = $cred, c.c = $cred,
+                        c.evaluation_pattern_ratio = $ep,
+                        c.eval_internal = $eval_int,
+                        c.eval_endsem = $eval_end
                     MERGE (sem)-[:OFFERS]->(c)
+                    MERGE (d)-[:OFFERS]->(c)
+                    MERGE (sv)-[:GOVERNS]->(c)
                 """,
                     sv_id=sv_id,
                     sem_num=sem_num,
@@ -1007,7 +1136,9 @@ def _write_neo4j(
                     T=c.get("T"),
                     P=c.get("P"),
                     cred=c.get("credits", ""),
-                    ep=c.get("evaluation_pattern_ratio", ""),
+                    ep=ratio,
+                    eval_int=eval_int,
+                    eval_end=eval_end,
                 )
 
             for slot in sem.get("elective_slots", []):
@@ -1044,8 +1175,17 @@ def _write_neo4j(
             for c in basket.get("courses", []):
                 session.run(
                     """
+                    MATCH (sv:SyllabusVersion {dept: $dept, year: $year})
+                    MATCH (d:Department {name: $dept})
                     MERGE (c:Course {code: $code, dept: $dept, year: $year})
-                    ON CREATE SET c.title = $title, c.credits = $cred
+                    ON CREATE SET c.title = $title, c.name = $title, c.credits = $cred
+                    SET c.name = coalesce(c.name, $title),
+                        c.title = coalesce(c.title, $title),
+                        c.credits = coalesce(nullif($cred, ''), c.credits),
+                        c.category = coalesce(nullif($cat, ''), c.category, 'Elective'),
+                        c.elective_basket = $bname
+                    MERGE (d)-[:OFFERS]->(c)
+                    MERGE (sv)-[:GOVERNS]->(c)
                     WITH c
                     MATCH (eb:ElectiveBasket {name: $bname, syllabus_version_id: $sv_id})
                     MERGE (eb)-[:CONTAINS]->(c)
@@ -1054,6 +1194,7 @@ def _write_neo4j(
                     dept=dept,
                     year=year,
                     title=c.get("title", ""),
+                    cat=c.get("category", ""),
                     cred=c.get("credits", ""),
                     bname=bname,
                     sv_id=sv_id,
@@ -1062,11 +1203,32 @@ def _write_neo4j(
         # 6. Course Detail
         for course in courses:
             code = course["code"]
+            ep = course.get("evaluation_pattern")
+            ratio = ep.get("ratio", "") if ep else ""
+            eval_int = None
+            eval_end = None
+            if ratio and ":" in ratio:
+                parts = ratio.split(":")
+                try:
+                    eval_int = int(parts[0].strip())
+                    eval_end = int(parts[1].strip())
+                except Exception:
+                    pass
+
             session.run(
                 """
+                MATCH (sv:SyllabusVersion {dept: $dept, year: $year})
+                MATCH (d:Department {name: $dept})
                 MERGE (c:Course {code: $code, dept: $dept, year: $year})
                 ON CREATE SET c.title = $name
-                SET c.name = $name, c.L = $L, c.T = $T, c.P = $P, c.credits = $cred
+                SET c.name = $name, c.L = $L, c.T = $T, c.P = $P,
+                    c.l = $L, c.t = $T, c.p = $P,
+                    c.credits = $cred, c.c = $cred,
+                    c.eval_internal = coalesce($eval_int, c.eval_internal),
+                    c.eval_endsem = coalesce($eval_end, c.eval_endsem),
+                    c.evaluation_pattern_ratio = coalesce(nullif($ep, ''), c.evaluation_pattern_ratio)
+                MERGE (d)-[:OFFERS]->(c)
+                MERGE (sv)-[:GOVERNS]->(c)
             """,
                 code=code,
                 dept=dept,
@@ -1076,6 +1238,9 @@ def _write_neo4j(
                 T=course.get("T"),
                 P=course.get("P"),
                 cred=course.get("credits", ""),
+                ep=ratio,
+                eval_int=eval_int,
+                eval_end=eval_end,
             )
 
             for prereq_code in course.get("prerequisites_courses", []):
@@ -1084,6 +1249,7 @@ def _write_neo4j(
                     MATCH (c:Course {code: $code, dept: $dept, year: $year})
                     MERGE (pre:Course {code: $pre_code, dept: $dept, year: $year})
                     MERGE (c)-[:REQUIRES_PREREQUISITE]->(pre)
+                    MERGE (c)-[:REQUIRES]->(pre)
                 """,
                     code=code,
                     dept=dept,
@@ -1127,6 +1293,7 @@ def _write_neo4j(
                     MERGE (co:CourseOutcome {id: $co_id, course_code: $code, dept: $dept, year: $year})
                     SET co.description = $desc
                     MERGE (c)-[:HAS_OUTCOME]->(co)
+                    MERGE (co)-[:BELONGS_TO]->(c)
                 """,
                     code=code,
                     dept=dept,
@@ -1161,17 +1328,19 @@ def _write_neo4j(
 
             for unit in course.get("units", []):
                 u_num = unit["number"]
+                unit_id = f"{code}_u{u_num}"
                 session.run(
                     """
                     MATCH (c:Course {code: $code, dept: $dept, year: $year})
                     MERGE (u:Unit {number: $num, course_code: $code, dept: $dept, year: $year})
-                    SET u.title = $title
+                    SET u.title = $title, u.unit_id = $unit_id
                     MERGE (c)-[:HAS_UNIT]->(u)
                 """,
                     code=code,
                     dept=dept,
                     year=year,
                     num=u_num,
+                    unit_id=unit_id,
                     title=unit.get("title", f"Unit {u_num}"),
                 )
 
@@ -1181,7 +1350,7 @@ def _write_neo4j(
                         """
                         MATCH (u:Unit {number: $num, course_code: $code, dept: $dept, year: $year})
                         MERGE (t:Topic {topic_id: $topic_id})
-                        SET t.name = $name, t.order = $order
+                        SET t.name = $name, t.order = $order, t.course_code = $code
                         MERGE (u)-[:HAS_TOPIC]->(t)
                     """,
                         code=code,
@@ -1199,8 +1368,9 @@ def _write_neo4j(
                         """
                         MATCH (c:Course {code: $code, dept: $dept, year: $year})
                         MERGE (tb:Textbook {course_code: $code, dept: $dept, year: $year, order: $order})
-                        SET tb.text = $text
+                        SET tb.text = $text, tb.title = $text
                         MERGE (c)-[:USES_TEXTBOOK]->(tb)
+                        MERGE (c)-[:HAS_TEXTBOOK]->(tb)
                     """,
                         code=code,
                         dept=dept,
@@ -1215,8 +1385,9 @@ def _write_neo4j(
                         """
                         MATCH (c:Course {code: $code, dept: $dept, year: $year})
                         MERGE (ref:Reference {course_code: $code, dept: $dept, year: $year, order: $order})
-                        SET ref.text = $text
+                        SET ref.text = $text, ref.title = $text
                         MERGE (c)-[:HAS_REFERENCE]->(ref)
+                        MERGE (c)-[:USES_REFERENCE]->(ref)
                     """,
                         code=code,
                         dept=dept,
