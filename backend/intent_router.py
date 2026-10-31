@@ -49,45 +49,80 @@ class IntentRouter:
     async def classify_intent(self, question: str) -> str:
         q_lower = question.lower()
         
-        # Tier 1: Fast Keyword Routing
+        # Tier 1: Fast Deterministic Keyword Routing
+        # 1. Course Outcome / Bloom's Taxonomy Mapping (GRAPH_PYQ_MAPPING)
+        # Evaluated first because questions about CO/BTL often contain words like 'questions' or 'get me questions'
+        if any(k in q_lower for k in [
+            "btl", "co1", "co2", "co3", "co4", "co5", "co6", "bloom", "blooms", "mapped to",
+            "course outcome", "course outcomes", "blooms taxonomy",
+            "level 1", "level 2", "level 3", "level 4", "level 5", "level 6",
+            "bt-1", "bt-2", "bt-3", "bt-4", "bt-5", "bt-6",
+            "bt 1", "bt 2", "bt 3", "bt 4", "bt 5", "bt 6",
+            "bt1", "bt2", "bt3", "bt4", "bt5", "bt6",
+            "k1", "k2", "k3", "k4", "k5", "k6"
+        ]):
+            return "GRAPH_PYQ_MAPPING"
+
+        # 2. Multi-hop Prerequisites (MULTI_HOP_PREREQ) - Strict explicit keywords only
+        if any(k in q_lower for k in [
+            "prerequisite", "prerequisites", "before taking", "should i know before",
+            "needed before", "before choosing", "prereq", "prereqs", "prior knowledge",
+            "pre-requisite", "pre-requisites", "what should i know before", "what to know before"
+        ]):
+            return "MULTI_HOP_PREREQ"
+
+        # 3. Problem List & PYQs by Topic or Mark (PROBLEM_LIST)
         if any(marker in q_lower for marker in [
             "problems on", "problem on", "questions on", "question on",
             "pyqs on", "pyq on", "problems about", "questions about",
-            "list of practice problems", "get me questions"
-        ]):
+            "questions for", "problems for", "find problems", "find questions",
+            "get me questions", "give me questions", "show me questions", "show questions",
+            "list of practice problems", "practice questions", "practice problems",
+            "mark questions", "marks questions", "mark problems", "marks problems",
+            "pyqs for", "questions like this", "problems like this",
+            "find similar", "match this diagram", "similar questions", "match this circuit"
+        ]) or ("[uploaded image context:" in q_lower and any(vk in q_lower for vk in ["question", "pyq", "circuit", "resistor", "automata", "find", "similar", "exam"])):
             return "PROBLEM_LIST"
+
+        # 4. Curriculum Structure, Syllabus, Semesters, Electives, Textbooks (SIMPLE_CURRICULUM)
         if any(k in q_lower for k in [
-            "prerequisite", "before taking", "should i know", "requires", "needed for", "before choosing"
-        ]):
-            return "MULTI_HOP_PREREQ"
-        if any(k in q_lower for k in [
-            "btl", "co1", "co2", "co3", "co4", "co5", "bloom", "mapped to", "course outcome questions"
-        ]):
-            return "GRAPH_PYQ_MAPPING"
-        if any(k in q_lower for k in [
-            "syllabus", "topics", "units", "course outcomes", "objectives", "evaluation",
-            "pattern", "textbook", "reference", "course code", "courses do i have", "electives"
+            "syllabus", "evaluation pattern", "assessment pattern",
+            "textbook", "textbooks", "courses do i have in semester", "semester courses",
+            "electives in", "elective subjects in", "elective basket",
+            "what all courses in sem", "credits for course", "contact hours"
         ]):
             return "SIMPLE_CURRICULUM"
+
+        # 5. Conceptual explanations, definitions, derivations -> GENERAL_QUERY fast-path
         if any(k in q_lower for k in [
-            "question", "questions", "pyq", "past year", "exam", "paper",
-            "midterm", "mid-term", "endsem", "end-sem", "problem", "problems", "circuit"
+            "explain", "what is", "what are", "how does", "how to", "why is", "why does",
+            "difference between", "derive", "definition of", "describe the working",
+            "how do i solve", "solve this", "solution for", "working of", "calculate the"
+        ]):
+            return "GENERAL_QUERY"
+
+        # 6. Generic PYQ Query
+        if any(k in q_lower for k in [
+            "pyq", "past year", "exam paper", "midterm", "mid-term", "endsem", "end-sem"
         ]):
             return "SIMPLE_PYQ"
 
-        # Tier 2: Semantic Embedding Fallback
+        # Tier 2: Semantic Embedding Fallback (for fuzzy curriculum vs problem matching)
         if not self.initialized:
             await self.initialize()
         q_emb = await embed_text(question)
         if not q_emb:
             return "GENERAL_QUERY"
         best_intent, best_score = "GENERAL_QUERY", -1.0
-        for intent, t_emb in self.intent_embeddings.items():
-            sim = cosine_similarity(q_emb, t_emb)
-            if sim > best_score:
-                best_score = sim
-                best_intent = intent
-        if best_score < 0.45:
+        # Only allow Tier 2 to select between broad categories; strict graph intents require explicit keywords
+        for intent in ["PROBLEM_LIST", "SIMPLE_CURRICULUM", "GENERAL_QUERY"]:
+            t_emb = self.intent_embeddings.get(intent)
+            if t_emb:
+                sim = cosine_similarity(q_emb, t_emb)
+                if sim > best_score:
+                    best_score = sim
+                    best_intent = intent
+        if best_score < 0.55:
             return "GENERAL_QUERY"
         return best_intent
 

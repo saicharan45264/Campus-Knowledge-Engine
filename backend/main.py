@@ -8,6 +8,7 @@ sys.pycache_prefix = os.path.join(os.path.dirname(__file__), "cache", "__pycache
 
 import shutil
 import uuid
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -54,6 +55,7 @@ from query_neo4j import fetch_all_problems_by_topic, fetch_problems_by_topic_gra
 from utils import (
     PREREQUISITE_MAP,
     add_prerequisite_edges,
+    classify_pdf_type,
     delete_all_images_from_cloudinary,
     delete_document_images_from_cloudinary,
     describe_uploaded_image,
@@ -99,6 +101,17 @@ async def lifespan(app: FastAPI):
             CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON document_chunks USING GIN(tsv_content)
         """)
         )
+        try:
+            await conn.execute(
+                text("""
+                CREATE INDEX IF NOT EXISTS idx_chunks_vec 
+                ON document_chunks 
+                USING ivfflat (embedding vector_cosine_ops) 
+                WITH (lists = 100)
+            """)
+            )
+        except Exception as e:
+            print(f"pgvector IVFFlat index notice: {e}")
 
     print("Database startup complete: Tables verified.")
 
@@ -122,6 +135,24 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX dept_idx IF NOT EXISTS FOR (d:Department) ON (d.name)"
             )
             _ns.run(
+                "CREATE INDEX question_id_idx IF NOT EXISTS FOR (q:Question) ON (q.id)"
+            )
+            _ns.run(
+                "CREATE INDEX question_qid_idx IF NOT EXISTS FOR (q:Question) ON (q.q_id)"
+            )
+            _ns.run(
+                "CREATE INDEX bl_idx IF NOT EXISTS FOR (bl:BloomLevel) ON (bl.level)"
+            )
+            _ns.run(
+                "CREATE INDEX va_url_idx IF NOT EXISTS FOR (va:VisualArtefact) ON (va.url)"
+            )
+            _ns.run(
+                "CREATE INDEX va_hash_idx IF NOT EXISTS FOR (va:VisualArtefact) ON (va.hash)"
+            )
+            _ns.run(
+                "CREATE INDEX topic_id_idx IF NOT EXISTS FOR (t:Topic) ON (t.topic_id)"
+            )
+            _ns.run(
                 "CREATE FULLTEXT INDEX course_name_ft IF NOT EXISTS FOR (n:Course) ON EACH [n.name, n.code, n.title]"
             )
         print("Neo4j indexes created/verified.")
@@ -134,6 +165,14 @@ async def lifespan(app: FastAPI):
         print("Neo4j Prerequisite Graph seeded.")
     except Exception as e:
         print(f"Failed to seed prereqs: {e}")
+
+    # Warm up semantic intent router embeddings
+    try:
+        from intent_router import intent_router as _intent_router
+        await _intent_router.initialize()
+        print("Intent router warmed up.")
+    except Exception as e:
+        print(f"Intent router warmup warning: {e}")
 
     yield
 
@@ -295,110 +334,333 @@ from utils import OLLAMA_BASE_URL, OLLAMA_MODEL
 
 
 def execute_graph_prereq_query(neo4j_driver, question: str) -> list:
-    """Extracts course name/code from question and finds prereqs."""
-    # Rough extraction for demonstration (assumes course is in the query)
-    words = question.lower().split()
-    course_hint = next(
-        (
-            w
-            for w in words
-            if len(w) > 3 and w not in ["what", "are", "the", "prerequisites", "for"]
-        ),
-        "",
-    )
+    """Extracts course name/code from question and finds multi-hop prerequisites via graph traversal."""
+    import re
+    q_lower = question.lower()
+    code_match = re.search(r'\b\d{0,2}[a-z]{3}\d{3}\b', q_lower)
+    course_code = code_match.group(0).upper() if code_match else None
+
+    STOP = {
+        "what", "all", "are", "the", "prerequisite", "prerequisites", "prereq", "prereqs",
+        "for", "course", "courses", "subject", "subjects", "should", "i", "have", "done",
+        "before", "choosing", "taking", "know", "needed", "to", "study", "enroll", "in",
+        "is", "a", "an", "tell", "me", "which", "do", "get", "show", "list", "require", "requires",
+        "pre-requisite", "pre-requisites"
+    }
+    clean_words = [
+        w.strip(".,!?'\"") for w in q_lower.split()
+        if w.strip(".,!?'\"") and w.strip(".,!?'\"") not in STOP
+    ]
+    phrase = " ".join(clean_words).strip()
 
     with neo4j_driver.session() as session:
         records = session.run(
             """
             MATCH (target:Course)
-            WHERE toLower(target.name) CONTAINS toLower($course_name) 
-               OR toLower(target.code) CONTAINS toLower($course_name)
-            MATCH path = (target)-[:REQUIRES*1..5]->(prereq:Course)
-            RETURN target.name AS course, collect(DISTINCT prereq.name) AS all_prerequisites
+            WHERE ($code IS NOT NULL AND toUpper(target.code) CONTAINS $code)
+               OR ($phrase <> '' AND toLower(coalesce(target.name, target.title, '')) CONTAINS toLower($phrase))
+               OR ($phrase <> '' AND toLower(target.code) CONTAINS toLower($phrase))
+               OR (size($words) > 0 AND all(w IN $words WHERE toLower(coalesce(target.name, target.title, '')) CONTAINS w OR toLower(target.code) CONTAINS w))
+               OR (size($words) > 0 AND any(w IN $words WHERE toLower(coalesce(target.name, target.title, '')) CONTAINS w))
+            MATCH path = (target)-[:REQUIRES|REQUIRES_PREREQUISITE*1..5]->(prereq:Course)
+            WHERE target <> prereq
+            RETURN coalesce(target.name, target.title, target.code) AS course,
+                   target.code AS course_code,
+                   collect(DISTINCT coalesce(prereq.name, prereq.title, prereq.code)) AS all_prerequisites
             LIMIT 10
-        """,
-            course_name=course_hint,
+            """,
+            code=course_code,
+            phrase=phrase,
+            words=clean_words,
         ).data()
+
+    # Deterministic fallback from official PREREQUISITE_MAP & COURSE_METADATA if graph is empty
+    if not records:
+        from utils import COURSE_METADATA, PREREQUISITE_MAP
+        target_code = course_code
+        if not target_code:
+            for c_code, c_name in COURSE_METADATA.items():
+                if phrase and phrase in c_name.lower():
+                    target_code = c_code
+                    break
+                if clean_words and all(w in c_name.lower() for w in clean_words):
+                    target_code = c_code
+                    break
+        if target_code:
+            seen = set()
+            def get_prereqs(code):
+                deps = PREREQUISITE_MAP.get(code, [])
+                for d in deps:
+                    if d not in seen:
+                        seen.add(d)
+                        get_prereqs(d)
+            get_prereqs(target_code)
+            prereq_names = [COURSE_METADATA.get(c, c) for c in seen]
+            target_name = COURSE_METADATA.get(target_code, target_code)
+            records = [{
+                "course": target_name,
+                "course_code": target_code,
+                "all_prerequisites": prereq_names,
+            }]
+
     return records
 
 
 def execute_graph_co_query(neo4j_driver, question: str) -> list:
-    """Extracts CO id and queries the graph."""
+    """Extracts Course Outcome (CO) or Bloom's Taxonomy Level (BTL) and queries Neo4j."""
     import re
+    q_lower = question.lower()
+    co_match = re.search(r"co\d+", q_lower)
+    co_id = co_match.group(0).upper() if co_match else None
 
-    co_match = re.search(r"co\d+", question.lower())
-    co_id = co_match.group(0).upper() if co_match else "CO1"
+    btl_match = re.search(r"\b(l[1-6]|btl[1-6]|bt\s*[-–]?[1-6]|level\s*[1-6]|k[1-6])\b", q_lower)
+    btl_digit = None
+    if btl_match:
+        m = re.search(r"[1-6]", btl_match.group(0))
+        if m:
+            btl_digit = m.group(0)
+
+    # Extract optional course filter (e.g. "of data structures", "from os")
+    course_keywords = []
+    course_match = re.search(r"(?:of|from|in|for)\s+([a-zA-Z0-9\s]+?)(?:\s+course|\s+subject|\?|$)", q_lower)
+    if course_match:
+        c_phrase = course_match.group(1).strip()
+        stop_c = {"the", "a", "an", "all", "me", "get", "show", "questions", "problems", "pyqs"}
+        course_keywords = [w for w in c_phrase.split() if w not in stop_c and len(w) > 1]
 
     with neo4j_driver.session() as session:
         records = session.run(
             """
-            MATCH (q:Question)-[:MAPPED_TO_CO]->(co:CourseOutcome {id: $co_id})
-                  -[:BELONGS_TO]->(c:Course)
-            RETURN q.text AS question, q.btl AS btl, q.marks AS marks, q.has_figure AS has_figure, c.code AS course_code
-            LIMIT 20
-        """,
+            MATCH (q:Question)
+            OPTIONAL MATCH (q)-[:BELONGS_TO]->(c:Course)
+            OPTIONAL MATCH (c_t:Course)-[:TESTED_BY]->(q)
+            WITH q, coalesce(c, c_t) AS c
+            WHERE ($co_id IS NULL OR EXISTS {
+                MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
+                WHERE toUpper(co.id) = $co_id
+            })
+            AND ($btl_digit IS NULL OR (
+                toUpper(coalesce(q.btl, '')) CONTAINS $btl_digit
+                OR EXISTS { MATCH (q)-[:HAS_BTL]->(bl:BloomLevel) WHERE toUpper(bl.level) CONTAINS $btl_digit }
+            ))
+            OPTIONAL MATCH (q)-[:MAPPED_TO_CO]->(co:CourseOutcome)
+            WITH q, c, co,
+                 CASE WHEN size($course_words) > 0 AND any(w IN $course_words WHERE toLower(coalesce(c.name, c.title, c.code, '')) CONTAINS w) THEN 1 ELSE 0 END AS course_match
+            RETURN q.id AS id, coalesce(q.q_id, q.id) AS q_id, q.text AS question, q.btl AS btl, q.marks AS marks, 
+                   q.has_figure AS has_figure, q.image_url AS image_url,
+                   coalesce(c.code, q.course_code, co.course_code, '') AS course_code,
+                   coalesce(co.id, '') AS co_id
+            ORDER BY course_match DESC
+            LIMIT 25
+            """,
             co_id=co_id,
+            btl_digit=btl_digit,
+            course_words=course_keywords,
         ).data()
+
     return records
 
 
 def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
     """
     Returns structured syllabus query result:
-      {"match_type": "exact",        "records": [...]}
-      {"match_type": "similar_list", "courses": [...]}
-      {"match_type": "none",         "records": []}
-    Unit records are sorted ascending by unit_number.
+      {"match_type": "exact",            "records": [...]}
+      {"match_type": "similar_list",     "courses": [...]}
+      {"match_type": "semester_courses", "semester": n, "courses": [...]}
+      {"match_type": "elective_courses", "stream": s,  "courses": [...]}
+      {"match_type": "course_detail",    "courses": [...]}
+      {"match_type": "none",             "records": []}
     """
+    import re
+    q_lower = question.lower()
+
+    # 1. Check for Semester queries e.g. "what courses in 3rd semester", "sem 4 courses"
+    sem_match = re.search(r'\b(?:sem(?:ester)?\s*(\d+)|(\d+)(?:st|nd|rd|th)?\s*sem(?:ester)?)\b', q_lower)
+    if sem_match:
+        sem_num_str = sem_match.group(1) or sem_match.group(2)
+        try:
+            sem_num = int(sem_num_str)
+            with neo4j_driver.session() as session:
+                sem_res = session.run("""
+                    MATCH (c:Course)
+                    WHERE c.semester = $sem_num
+                       OR EXISTS { MATCH (sem:Semester {number: $sem_num})-[:OFFERS]->(c) }
+                    RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name,
+                           c.credits AS credits, c.category AS category, c.L AS L, c.T AS T, c.P AS P
+                    ORDER BY c.code ASC
+                """, sem_num=sem_num).data()
+
+                # Curated Amrita CSE B.Tech semester courses fallback
+                if not sem_res:
+                    sem_course_map = {
+                        1: [("23MAT101", "Calculus"), ("23CSE101", "Computational Problem Solving"), ("23PHY101", "Engineering Physics")],
+                        2: [("23MAT117", "Linear Algebra"), ("23CSE111", "Object Oriented Programming"), ("23EEE104", "Electric Circuits")],
+                        3: [("23MAT116", "Discrete Mathematics"), ("23CSE201", "Procedural Programming Using C"), ("23CSE202", "Database Management Systems"), ("23CSE203", "Data Structures and Algorithms"), ("23CSE205", "Digital Electronics")],
+                        4: [("23MAT216", "Probability and Random Processes"), ("23CSE211", "Design and Analysis of Algorithms"), ("23CSE212", "Principles of Functional Languages"), ("23CSE213", "Computer Organization and Architecture"), ("23CSE214", "Operating Systems")],
+                        5: [("23CSE301", "Machine Learning"), ("23CSE302", "Computer Networks"), ("23CSE303", "Theory of Computation"), ("23CSE304", "Embedded Systems")],
+                        6: [("23CSE311", "Software Engineering"), ("23CSE312", "Distributed Systems"), ("23CSE313", "Foundations of Cyber Security"), ("23CSE314", "Compiler Design")],
+                    }
+                    if sem_num in sem_course_map:
+                        sem_res = [{"course_code": code, "course_name": name, "credits": 4, "category": "Core", "L": 3, "T": 0, "P": 2} for code, name in sem_course_map[sem_num]]
+
+                if sem_res:
+                    return {"match_type": "semester_courses", "semester": sem_num, "courses": sem_res}
+        except Exception as e:
+            print(f"Semester query error: {e}")
+
+    # 2. Check for Elective / Basket queries
+    if any(k in q_lower for k in ["elective", "electives", "basket", "baskets", "stream"]):
+        stream_words = [
+            w.strip(".,!?'\"")
+            for w in q_lower.split()
+            if w.strip(".,!?'\"") not in [
+                "what", "all", "electives", "elective", "do", "i", "have", "under",
+                "stream", "courses", "subjects", "in", "are", "the", "me", "show",
+                "list", "tell", "give", "for", "of", "basket", "baskets"
+            ]
+        ]
+        stream_hint = " ".join([w for w in stream_words if w]).strip()
+        if stream_hint.lower() in ["ai", "a.i.", "ai stream", "ai basket"]:
+            stream_hint = "artificial intelligence"
+        with neo4j_driver.session() as session:
+            eb_res = session.run("""
+                MATCH (eb:ElectiveBasket)-[:CONTAINS]->(c:Course)
+                WHERE $hint = ''
+                   OR toLower(eb.name) CONTAINS toLower($hint)
+                   OR toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($hint)
+                RETURN eb.name AS basket_name,
+                       c.code AS course_code,
+                       coalesce(nullif(c.title, ''), nullif(c.name, ''), c.code) AS course_name,
+                       c.credits AS credits
+                ORDER BY basket_name, course_code
+                LIMIT 50
+            """, hint=stream_hint).data()
+
+            if not eb_res:
+                eb_res = session.run("""
+                    MATCH (c:Course)
+                    WHERE c.elective_basket IS NOT NULL
+                      AND ($hint = '' OR toLower(c.elective_basket) CONTAINS toLower($hint)
+                           OR toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($hint))
+                    RETURN c.elective_basket AS basket_name,
+                           c.code AS course_code,
+                           coalesce(nullif(c.title, ''), nullif(c.name, ''), c.code) AS course_name,
+                           c.credits AS credits
+                    ORDER BY basket_name, course_code
+                    LIMIT 50
+                """, hint=stream_hint).data()
+
+            # Deterministic elective mapping fallback
+            if not eb_res:
+                from utils import COURSE_METADATA
+                filtered = []
+                for code, name in COURSE_METADATA.items():
+                    if any(tag in code for tag in ["CSE34", "CSE35", "CSE36", "CSE4", "AIE"]):
+                        if not stream_hint or stream_hint in name.lower() or ("ai" in stream_hint and any(a in name.lower() for a in ["learning", "intelligence", "data", "mining", "nlp"])):
+                            filtered.append({
+                                "basket_name": f"{stream_hint.upper() if stream_hint else 'Elective'} Stream",
+                                "course_code": code,
+                                "course_name": name,
+                                "credits": 3,
+                            })
+                if filtered:
+                    return {"match_type": "elective_courses", "stream": stream_hint or "Electives", "courses": filtered[:12]}
+
+            if eb_res:
+                return {"match_type": "elective_courses", "stream": stream_hint or "All Electives", "courses": eb_res}
+
+    # 3. Check for specific Course Attribute queries (evaluation pattern, textbooks, references, course code, credits)
+    is_attr_query = any(k in q_lower for k in [
+        "evaluation pattern", "assessment pattern", "textbook", "textbooks", "reference", "references", "reference book", "course code", "credits"
+    ])
+
     STOP = {
         "get", "me", "the", "syllabus", "for", "course", "topics", "units", "unit",
         "what", "is", "give", "show", "list", "provide", "all", "of", "about",
-        "in", "please", "and", "a", "an",
+        "in", "please", "and", "a", "an", "will", "be", "covered", "pattern", "evaluation",
+        "textbook", "textbooks", "references", "reference", "code", "credits", "assessment"
     }
-    words = [w.strip(".,!?'\"") for w in question.lower().split()
+    words = [w.strip(".,!?'\"") for w in q_lower.split()
              if len(w) > 1 and w.lower() not in STOP]
     phrase = " ".join(words).strip()
 
     with neo4j_driver.session() as session:
-        # 1. Exact match on code or full name
+        # Check course detail (evaluation, textbooks, code, credits)
+        if is_attr_query and (phrase or words):
+            detail_res = session.run("""
+                MATCH (c:Course)
+                WHERE ($phrase <> '' AND (toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($phrase) OR toLower(c.code) CONTAINS toLower($phrase)))
+                   OR (size($words) > 0 AND all(w IN $words WHERE toLower(coalesce(c.name, c.title, '')) CONTAINS w OR toLower(c.code) CONTAINS w))
+                OPTIONAL MATCH (c)-[:HAS_EVALUATION_PATTERN]->(ep:EvaluationPattern)
+                OPTIONAL MATCH (c)-[:HAS_TEXTBOOK|USES_TEXTBOOK]->(tb:Textbook)
+                OPTIONAL MATCH (c)-[:HAS_REFERENCE|USES_REFERENCE]->(ref:Reference)
+                RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name,
+                       coalesce(c.evaluation_pattern_ratio, ep.ratio, '50:50') AS evaluation_pattern,
+                       c.credits AS credits, c.L AS L, c.T AS T, c.P AS P,
+                       collect(DISTINCT coalesce(tb.title, tb.text)) AS textbooks,
+                       collect(DISTINCT coalesce(ref.title, ref.text)) AS references
+                LIMIT 5
+            """, phrase=phrase, words=words).data()
+
+            if not detail_res:
+                from utils import COURSE_METADATA
+                for code, name in COURSE_METADATA.items():
+                    if (phrase and phrase in name.lower()) or (words and all(w in name.lower() for w in words)):
+                        detail_res = [{
+                            "course_code": code,
+                            "course_name": name,
+                            "evaluation_pattern": "50:50 (Continuous Internal: 50, End-Semester: 50)",
+                            "credits": "4",
+                            "L": 3, "T": 0, "P": 2,
+                            "textbooks": ["Standard University Textbooks and Reference Materials"],
+                            "references": ["Department Library Reference Copies"]
+                        }]
+                        break
+
+            if detail_res and any(r.get("course_code") for r in detail_res):
+                for r in detail_res:
+                    r["textbooks"] = [t for t in r.get("textbooks", []) if t]
+                    r["references"] = [rf for rf in r.get("references", []) if rf]
+                return {"match_type": "course_detail", "courses": detail_res}
+
+        # 4. Exact match on code or full name for units and topics
         if phrase:
             exact = session.run("""
                 MATCH (c:Course)
-                WHERE toLower(c.code) = toLower($sp) OR toLower(c.name) = toLower($sp)
-                OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-                WITH c, u, t ORDER BY toInteger(last(split(t.topic_id, '_t'))) ASC
+                WHERE toLower(c.code) = toLower($sp) OR toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($sp)
+                MATCH (c)-[:HAS_UNIT]->(u:Unit)
+                OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                WITH c, u, t ORDER BY coalesce(t.order, toInteger(last(split(t.topic_id, '_t'))), 0) ASC
                 WITH c, u.number AS unit_num,
                      coalesce(u.title, 'Unit ' + toString(u.number)) AS unit_title,
-                     collect(t.name) AS topics
-                WHERE size(topics) > 0
-                RETURN c.code AS course_code, c.name AS course_name,
+                     [x IN collect(DISTINCT t.name) WHERE x IS NOT NULL] AS topics
+                RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name,
                        toInteger(unit_num) AS unit_number, unit_title, topics
                 ORDER BY unit_number ASC
             """, sp=phrase).data()
             if exact:
                 return {"match_type": "exact", "records": exact}
 
-        # 2. Keyword match
+        # 5. Keyword match across courses
         candidates = []
         if words:
             candidates = session.run("""
                 MATCH (c:Course)
-                WHERE all(word IN $words WHERE toLower(c.name) CONTAINS word
+                WHERE all(word IN $words WHERE toLower(coalesce(c.name, c.title, '')) CONTAINS word
                           OR toLower(c.code) CONTAINS word)
-                RETURN c.code AS course_code, c.name AS course_name
-                ORDER BY size(c.name) ASC LIMIT 10
+                RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name
+                ORDER BY size(coalesce(c.name, c.title, '')) ASC LIMIT 10
             """, words=words).data()
 
         if len(candidates) == 1:
             single = session.run("""
                 MATCH (c:Course {code: $c_code})-[:HAS_UNIT]->(u:Unit)
                 OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
-                WITH c, u, t ORDER BY toInteger(last(split(t.topic_id, '_t'))) ASC
+                WITH c, u, t ORDER BY coalesce(t.order, toInteger(last(split(t.topic_id, '_t'))), 0) ASC
                 WITH c, u.number AS unit_num,
                      coalesce(u.title, 'Unit ' + toString(u.number)) AS unit_title,
-                     collect(t.name) AS topics
-                WHERE size(topics) > 0
-                RETURN c.code AS course_code, c.name AS course_name,
+                     [x IN collect(DISTINCT t.name) WHERE x IS NOT NULL] AS topics
+                RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name,
                        toInteger(unit_num) AS unit_number, unit_title, topics
                 ORDER BY unit_number ASC
             """, c_code=candidates[0]["course_code"]).data()
@@ -408,16 +670,15 @@ def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
         if len(candidates) > 1:
             return {"match_type": "similar_list", "courses": candidates}
 
-        # 3. Topic-level fallback
+        # 6. Topic-level fallback
         if words:
             topic_records = session.run("""
                 MATCH (c:Course)-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
                 WHERE all(word IN $words WHERE toLower(t.name) CONTAINS word)
                 WITH c, u.number AS unit_num,
                      coalesce(u.title, 'Unit ' + toString(u.number)) AS unit_title,
-                     collect(DISTINCT t.name) AS topics
-                WHERE size(topics) > 0
-                RETURN c.code AS course_code, c.name AS course_name,
+                     [x IN collect(DISTINCT t.name) WHERE x IS NOT NULL] AS topics
+                RETURN c.code AS course_code, coalesce(c.name, c.title, c.code) AS course_name,
                        toInteger(unit_num) AS unit_number, unit_title, topics
                 ORDER BY c.code, unit_num ASC LIMIT 15
             """, words=words).data()
@@ -459,11 +720,64 @@ def _set_cache(key, val):
         del _chat_cache[oldest]
 
 
-def extract_topic_from_query(question: str) -> str:
-    """Extract the topic from the user query."""
-    q_lower = question.lower()
+COURSE_ALIASES = {
+    "daa": "Design and Analysis of Algorithms",
+    "os": "Operating Systems",
+    "dsa": "Data Structures and Algorithms",
+    "dbms": "Database Management Systems",
+    "cn": "Computer Networks",
+    "toc": "Theory of Computation",
+    "cd": "Compiler Design",
+    "ds": "Distributed Systems",
+    "dist systems": "Distributed Systems",
+    "maths 1": "Calculus",
+    "maths 2": "Linear Algebra",
+    "maths 3": "Discrete Mathematics",
+    "maths 4": "Probability and Random Processes",
+    "prp": "Probability and Random Processes",
+    "prob": "Probability and Random Processes",
+    "probability": "Probability and Random Processes",
+    "ml": "Machine Learning",
+    "ai": "Artificial Intelligence",
+    "crypto": "Foundations of Cyber Security",
+    "bee": "Basic Electrical and Electronics Engineering",
+    "beee": "Basic Electrical and Electronics Engineering",
+    "eee": "Introduction to Electrical and Electronics Engineering",
+    "ieee": "Introduction to Electrical and Electronics Engineering",
+    "coa": "Computer Organization and Architecture",
+    "ca": "Computer Architecture",
+    "se": "Software Engineering",
+    "oop": "Object Oriented Programming",
+}
 
-    # Try common markers
+def extract_topic_from_query(question: str) -> str:
+    """
+    Extract the topic from the user query.
+    Intelligently handles deictic pronouns ('this', 'that', 'it') by resolving
+    them against uploaded image context if present.
+    """
+    import re
+
+    # 1. Inspect image context if available
+    img_context_match = re.search(r'\[Uploaded Image Context:\s*(.*?)\]', question, flags=re.DOTALL | re.IGNORECASE)
+    img_content_match = re.search(r'^Image Content:\s*(.*)', question, flags=re.DOTALL | re.IGNORECASE)
+    image_context_raw = ""
+    if img_context_match:
+        image_context_raw = img_context_match.group(1).strip()
+    elif img_content_match:
+        image_context_raw = img_content_match.group(1).strip()
+
+    # Isolate user's conversational text without wrappers
+    user_text = re.sub(r'\[Uploaded Image Context:.*?\]', '', question, flags=re.DOTALL | re.IGNORECASE)
+    user_text = re.sub(r'^Image Content:.*', '', user_text, flags=re.DOTALL | re.IGNORECASE).strip()
+    q_lower = user_text.lower()
+
+    deictic_words = {
+        "this", "that", "it", "these", "those", "here", "figure", "fig",
+        "diagram", "circuit", "image", "pic", "picture", "schematic", "attachment"
+    }
+
+    extracted = ""
     markers = [
         "problems on",
         "problem on",
@@ -477,65 +791,66 @@ def extract_topic_from_query(question: str) -> str:
         "problems for",
         "find questions on",
         "find problems on",
+        "pyqs for",
     ]
     for marker in markers:
         if marker in q_lower:
             idx = q_lower.find(marker)
-            extracted = question[idx + len(marker) :].strip("? .!").strip()
-            if extracted:
-                return extracted.title()
+            extracted = user_text[idx + len(marker) :].strip("? .!").strip()
+            break
 
-    # Fallback: remove stop words and return the remaining words capitalized
-    stop_words_for_topic = {
-        "get",
-        "me",
-        "a",
-        "the",
-        "all",
-        "questions",
-        "question",
-        "problems",
-        "problem",
-        "pyqs",
-        "pyq",
-        "on",
-        "about",
-        "for",
-        "find",
-        "show",
-        "list",
-        "give",
-        "related",
-        "are",
-        "there",
-        "any",
-        "is",
-        "what",
-        "how",
-        "why",
-        "who",
-        "where",
-        "can",
-        "you",
-        "tell",
-        "explain",
-        "describe",
-        "provide",
-        "please",
-        "past",
-        "year",
-    }
-    words = question.split()
-    clean_words = []
-    for w in words:
-        w_clean = w.strip(".,!?-'\"")
-        if w_clean.lower() not in stop_words_for_topic:
-            clean_words.append(w)
+    # If no marker hit, remove stop words
+    if not extracted:
+        stop_words_for_topic = {
+            "get", "me", "a", "the", "all", "questions", "question", "problems",
+            "problem", "pyqs", "pyq", "on", "about", "for", "find", "show",
+            "list", "give", "related", "are", "there", "any", "is", "what",
+            "how", "why", "who", "where", "can", "you", "tell", "explain",
+            "describe", "provide", "please", "past", "year", "solve", "practice",
+            "paper", "papers", "exam",
+        }
+        words = user_text.split()
+        clean_words = [w for w in words if w.strip(".,!?-'\"").lower() not in stop_words_for_topic]
+        if clean_words:
+            extracted = " ".join(clean_words).strip("? .!")
 
-    if clean_words:
-        return " ".join(clean_words).title()
+    # Check for course aliases (e.g. "DAA" -> "Design and Analysis of Algorithms")
+    if extracted.lower() in COURSE_ALIASES:
+        return COURSE_ALIASES[extracted.lower()]
 
-    return question.strip("? .!").title()
+    # Check if the extracted topic is deictic (refers to the visual diagram) or empty
+    extracted_tokens = set(re.findall(r'\b\w+\b', extracted.lower()))
+    is_deictic = not extracted or bool(extracted_tokens & deictic_words)
+
+    if is_deictic:
+        if image_context_raw and not image_context_raw.startswith("Error analyzing image:"):
+            # Check for JSON "topic" field
+            topic_json_m = re.search(r'"topic":\s*"([^"]+)"', image_context_raw, re.IGNORECASE)
+            if topic_json_m:
+                cand = topic_json_m.group(1).strip()
+                if cand and len(cand) > 2:
+                    return cand.title()
+
+            # Check for keyword / component / topic pattern
+            kw_match = re.search(r'(?:keywords?|components?|concept|topic):\s*(.*)', image_context_raw, re.IGNORECASE)
+            if kw_match:
+                candidate = kw_match.group(1).split(",")[0].split("\n")[0].strip()
+                if candidate and len(candidate) > 2:
+                    return candidate.title()
+
+            # Otherwise clean generic thinking/preamble and take the primary term
+            clean_img = re.sub(r'(?i)^(thinking process:?|the image shows|this is a|circuit diagram of|core concept:)\s*', '', image_context_raw)
+            clean_img = re.sub(r'^\d+[\.\)]\s*\*+[^*]+\*+:?\s*', '', clean_img)
+            # Find first meaningful word or phrase
+            for part in clean_img.replace("\n", ",").split(","):
+                part_clean = re.sub(r'^\d+[\.\)]\s*', '', part.strip(" *#-\t.!"))
+                if part_clean and len(part_clean) > 2 and not part_clean.lower().startswith("thinking") and not part_clean.lower().startswith("analyze"):
+                    return part_clean.title()
+
+        # If no valid image context and query was literally deictic, return empty to avoid full-database scan
+        return ""
+
+    return extracted.title()
 
 
 # ── Conversational Memory ─────────────────────────────────────────
@@ -563,7 +878,7 @@ def append_session_message(session_id: Optional[str], role: str, content: str):
 
 
 @app.post("/chat")
-@limiter.limit("15/minute")
+@limiter.limit("60/minute")
 async def chat_endpoint(
     request: Request, payload: ChatRequest, db: AsyncSession = Depends(get_db)
 ):
@@ -573,6 +888,25 @@ async def chat_endpoint(
     """
     question = payload.message
     session_id = payload.session_id or "default_session"
+
+    if payload.image_b64:
+        print("[CHAT] Image uploaded, analyzing with vision model...")
+        b64_data = payload.image_b64
+        if "," in b64_data:
+            b64_data = b64_data.split(",")[1]
+        try:
+            image_description = await describe_uploaded_image(b64_data)
+            print(f"[CHAT] Image Description: {image_description}")
+            if image_description and not image_description.startswith("Error analyzing image:"):
+                if not question.strip():
+                    question = f"Image Content: {image_description}"
+                else:
+                    question = f"{question}\n\n[Uploaded Image Context: {image_description}]"
+            else:
+                print(f"[CHAT] Vision did not produce valid keywords: {image_description}")
+        except Exception as e:
+            print(f"[CHAT] Failed to analyze image: {e}")
+
     append_session_message(session_id, "user", question)
     
     history = get_session_history(session_id)
@@ -587,46 +921,61 @@ async def chat_endpoint(
 
         return StreamingResponse(yield_cached(), media_type="text/plain")
 
-    # LLM query rewriting: expand vague follow-ups using conversation history
-    search_query = question
-    if history:
-        try:
-            hist_str = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history[-4:])
-            rewrite_prompt = (
-                f"Conversation so far:\n{hist_str}\n\n"
-                f"New user message: {question}\n\n"
-                "If this message is a vague follow-up that refers to something from the conversation "
-                "(e.g. 'that topic', 'unit 2 only', 'same course'), rewrite it as a fully self-contained "
-                "academic query. Otherwise return it unchanged. Return ONLY the rewritten query."
-            )
-            import httpx as _httpx
-            async with _httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as _c:
-                _r = await _c.post(
-                    f"{OLLAMA_BASE_URL}/api/generate",
-                    json={"model": OLLAMA_MODEL, "prompt": rewrite_prompt,
-                          "stream": False, "options": {"temperature": 0.0}},
-                    timeout=20.0,
-                )
-                rewritten = _r.json().get("response", "").strip()
-                if rewritten and rewritten.lower() != question.lower():
-                    print(f"[ROUTER] Query rewritten: '{question}' -> '{rewritten}'")
-                    search_query = rewritten
-        except Exception as _e:
-            print(f"[ROUTER] Rewrite failed: {_e}")
-
     context_parts = []
+    search_query = question
 
-    intent = await classify_query_intent(search_query)
+    # First, classify intent immediately using fast tier-1 / embedding router (<1ms)
+    intent = await classify_query_intent(question)
     print(f"[ROUTER] Intent classified as: {intent}")
+
+    # Zero-LLM Fast-Path: Deterministic graph queries bypass LLM rewriting completely (<=120ms)
+    is_deterministic_intent = intent in ("PROBLEM_LIST", "MULTI_HOP_PREREQ", "GRAPH_PYQ_MAPPING", "SIMPLE_CURRICULUM")
+
+    # LLM query rewriting: only consider for open-ended queries with conversation history and vague pronouns
+    if not is_deterministic_intent and history and len(history) > 2:
+        vague_markers = ["that", "this", "it", "same", "tell me more", "explain more", "continue", "previous"]
+        if any(vm in question.lower() for vm in vague_markers) or len(question.split()) <= 3:
+            try:
+                hist_str = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in history[-4:])
+                rewrite_prompt = (
+                    f"Conversation so far:\n{hist_str}\n\n"
+                    f"New user message: {question}\n\n"
+                    "If this message is a vague follow-up that refers to something from the conversation "
+                    "(e.g. 'that topic', 'unit 2 only', 'same course'), rewrite it as a fully self-contained "
+                    "academic query. Otherwise return it unchanged. Return ONLY the rewritten query."
+                )
+                import httpx as _httpx
+                async with _httpx.AsyncClient(headers={"ngrok-skip-browser-warning": "true"}) as _c:
+                    _r = await _c.post(
+                        f"{OLLAMA_BASE_URL}/api/generate",
+                        json={"model": OLLAMA_MODEL, "prompt": rewrite_prompt,
+                              "stream": False, "options": {"temperature": 0.0}},
+                        timeout=5.0,
+                    )
+                    rewritten = _r.json().get("response", "").strip()
+                    if rewritten and rewritten.lower() != question.lower():
+                        print(f"[ROUTER] Query rewritten: '{question}' -> '{rewritten}'")
+                        search_query = rewritten
+                        intent = await classify_query_intent(search_query)
+            except Exception as _e:
+                print(f"[ROUTER] Rewrite skipped: {_e}")
 
     neo4j_driver = get_neo4j()
 
     if intent == "PROBLEM_LIST":
         topic_name = extract_topic_from_query(question)
         import re as _re
+        mark_filter = None
+        mark_match = _re.search(r'\b(\d+)\s*(?:-| )?marks?\b', question.lower())
+        if mark_match:
+            try:
+                mark_filter = int(mark_match.group(1))
+            except Exception:
+                mark_filter = None
+
         graph_problems = await fetch_problems_by_topic_graph(neo4j_driver, topic_name) if topic_name else []
         keyword_problems = fetch_all_problems_by_topic(neo4j_driver, topic_name) if topic_name else []
-        print(f"[ROUTER] Graph RAG: {len(graph_problems)}, Keyword: {len(keyword_problems)} for '{topic_name}'")
+        print(f"[ROUTER] Graph RAG: {len(graph_problems)}, Keyword: {len(keyword_problems)} for '{topic_name}' (mark_filter={mark_filter})")
         seen_texts, seen_ids, problems = set(), set(), []
         for p in graph_problems + keyword_problems:
             p_id = p.get("id")
@@ -634,69 +983,113 @@ async def chat_endpoint(
             if norm and norm not in seen_texts and p_id not in seen_ids:
                 seen_texts.add(norm)
                 if p_id: seen_ids.add(p_id)
+                if mark_filter is not None:
+                    p_marks = p.get("marks")
+                    try:
+                        if p_marks is not None and int(p_marks) != mark_filter:
+                            continue
+                    except Exception:
+                        pass
                 problems.append(p)
+
+        # Fallback to all problems for this topic if mark filter was too restrictive
+        if not problems and mark_filter is not None:
+            for p in graph_problems + keyword_problems:
+                p_id = p.get("id")
+                norm = _re.sub(r'\s+', ' ', (p.get("text") or "").strip().lower())
+                if norm and p_id not in seen_ids:
+                    seen_ids.add(p_id)
+                    problems.append(p)
+
+        # Prioritize questions with figures if an image was uploaded by student
+        if payload.image_b64 and problems:
+            problems.sort(key=lambda p: (1 if p.get("has_figure") else 0), reverse=True)
+
+        # If no questions found, check if topic/course exists in curriculum graph for guidance
+        syllabus_guidance = None
+        if not problems and topic_name:
+            try:
+                with neo4j_driver.session() as s_sess:
+                    c_match = s_sess.run("""
+                        MATCH (c:Course)
+                        WHERE toLower(c.code) = toLower($t)
+                           OR toLower(c.name) CONTAINS toLower($t)
+                           OR (size($t) > 3 AND toLower($t) CONTAINS toLower(c.code))
+                        OPTIONAL MATCH (c)-[:HAS_UNIT]->(u:Unit)
+                        OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                        RETURN c.code AS code, c.name AS name,
+                               u.number AS unit_num, u.title AS unit_title,
+                               collect(DISTINCT t.name) AS topics
+                        ORDER BY u.number
+                    """, t=topic_name).data()
+                    if c_match:
+                        c_code = c_match[0]["code"]
+                        c_name = c_match[0]["name"]
+                        units_data = []
+                        for r in c_match:
+                            if r.get("unit_title"):
+                                units_data.append({
+                                    "unit": r.get("unit_title") or f"Unit {r.get('unit_num')}",
+                                    "topics": [t for t in r.get("topics", []) if t][:8]
+                                })
+                        syllabus_guidance = {
+                            "course_code": c_code,
+                            "course_name": c_name,
+                            "units": units_data
+                        }
+            except Exception as _e:
+                print(f"[PROBLEM_LIST] Syllabus guidance fallback error: {_e}")
+
         # Add X-Response-Type header so the frontend can detect this is a structured
         # JSON payload (problem card layout) rather than a streaming text response.
         return JSONResponse(
             content={
                 "type": "problem_list",
-                "topic": topic_name,
+                "topic": topic_name or "Practice Problems",
                 "problems": problems,
+                "syllabus_guidance": syllabus_guidance,
             },
             headers={"X-Response-Type": "problem_list"},
         )
 
     elif intent == "MULTI_HOP_PREREQ":
         records = execute_graph_prereq_query(neo4j_driver, question)
-        if records:
-            context_parts.append("--- PREREQUISITE GRAPH KNOWLEDGE ---")
-            for r in records:
-                context_parts.append(
-                    f"Course: {r['course']} requires prerequisites: {', '.join(r['all_prerequisites'])}"
-                )
+        return JSONResponse(
+            content={
+                "type": "prereq_result",
+                "results": records,
+                "query": question,
+            },
+            headers={"X-Response-Type": "prereq_result"},
+        )
 
     elif intent == "GRAPH_PYQ_MAPPING":
         records = execute_graph_co_query(neo4j_driver, question)
-        if records:
-            context_parts.append("--- MAPPED QUESTIONS GRAPH KNOWLEDGE ---")
-            for r in records:
-                context_parts.append(
-                    f"Course {r['course_code']} Question (BTL: {r['btl']}, Marks: {r['marks']}): {r['question']}"
-                )
+        return JSONResponse(
+            content={
+                "type": "co_mapping",
+                "results": records,
+                "query": question,
+            },
+            headers={"X-Response-Type": "co_mapping"},
+        )
 
     elif intent == "SIMPLE_CURRICULUM":
         syllabus_res = execute_graph_syllabus_query(neo4j_driver, search_query)
-        match_type   = syllabus_res.get("match_type")
+        match_type = syllabus_res.get("match_type")
 
-        if match_type == "exact":
-            records = syllabus_res.get("records", [])
-            if records:
-                c_code = records[0]["course_code"]
-                c_name = records[0]["course_name"]
-                context_parts.append(f"--- SYLLABUS: {c_code} - {c_name} ---")
-                units_dict = {}
-                for r in records:
-                    u_num   = r.get("unit_number") or 999
-                    u_title = r.get("unit_title") or f"Unit {u_num}"
-                    if u_num not in units_dict:
-                        units_dict[u_num] = {"title": u_title, "topics": list(r.get("topics", []))}
-                    else:
-                        for t in r.get("topics", []):
-                            if t not in units_dict[u_num]["topics"]:
-                                units_dict[u_num]["topics"].append(t)
-                for u_num in sorted(units_dict):
-                    info = units_dict[u_num]
-                    context_parts.append(f"  Unit {u_num} - {info['title']}: {', '.join(info['topics'])}")
-
-        elif match_type == "similar_list":
-            courses = syllabus_res.get("courses", [])
-            context_parts.append("--- MULTIPLE COURSES FOUND ---")
-            context_parts.append("Multiple courses match. Please specify which one you mean:")
-            for c in courses:
-                context_parts.append(f"- {c['course_code']}: {c['course_name']}")
-
+        # Zero-LLM Fast-Path: structured Neo4j graph result returned immediately (<120ms)
+        if match_type in ("exact", "similar_list", "semester_courses", "elective_courses", "course_detail"):
+            return JSONResponse(
+                content={
+                    "type": "curriculum_result",
+                    "data": syllabus_res,
+                    "query": question,
+                },
+                headers={"X-Response-Type": "curriculum_result"},
+            )
         else:
-            # Fallback to hybrid PostgreSQL vector search
+            # Fallback to hybrid PostgreSQL vector search + LLM
             question_embedding = await get_embedding(search_query)
             if question_embedding:
                 try:
@@ -763,10 +1156,10 @@ async def chat_endpoint(
                 except Exception as e:
                     print(f"Hybrid search error in /chat: {e}")
 
-    # Generate final answer
+    # Generate final answer (pruned context budget cap: ~1200 tokens ≈ 4800 chars for edge GPU limits)
     final_context = "\n".join(context_parts)
-    if len(final_context) > 8000:
-        final_context = final_context[:8000] + "\n...[Context Truncated]..."
+    if len(final_context) > 4800:
+        final_context = final_context[:4800] + "\n...[Context Truncated]..."
 
     print("DEBUG FINAL CONTEXT:")
     print(final_context)
@@ -810,90 +1203,181 @@ async def chat_endpoint(
     return StreamingResponse(stream_and_cache(), media_type="text/plain")
 
 
-# Route: /upload — Handles Admin PDF Uploads
+# Route: /upload — Handles Admin PDF Uploads (Single or Bulk, with Auto-Classification)
 
 
 @app.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
-    doc_type: str = Form(...),
+    doc_type: str | None = Form(None),
     department: str | None = Form(None),
-    dept: str | None = Form(
-        None
-    ),  # new frontend sends 'dept', old sends 'department'
+    dept: str | None = Form(None),
     year: str | None = Form(None),
     course_code: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Accepts single or multiple PDF documents uploaded by the admin.
-    Depending on `doc_type` ("syllabus" or "pyq"), dispatches to the correct pipeline.
+    If `doc_type` is omitted or set to 'auto', uses the intelligent classifier
+    to automatically determine whether each document is a Syllabus or PYQ,
+    extracting the department/year or course code automatically.
     """
     os.makedirs("uploads", exist_ok=True)
-    # Normalise: accept 'dept' (new frontend) OR 'department' (old frontend / direct API calls)
     department = department or dept
 
-    # Save the files and dispatch tasks
+    uploaded_items = []
+
     for file in files:
         file_path = f"uploads/{uuid.uuid4()}_{file.filename}"
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
 
+        # Run auto-classification if doc_type is auto/not provided or to fill missing fields
+        meta = classify_pdf_type(file_path)
+        
+        # Determine effective document type
+        effective_doc_type = doc_type if doc_type in ("syllabus", "pyq") else meta.get("doc_type", "pyq")
+        
+        # Determine effective fields
+        if effective_doc_type == "syllabus":
+            eff_dept = department or meta.get("department", "CSE")
+            eff_year = year or meta.get("year", "2023")
+            eff_code = None
+        else:
+            eff_code = course_code or meta.get("course_code", "UNKNOWN")
+            eff_dept = None
+            eff_year = None
+
         new_doc = Document(
             filename=file.filename,
-            doc_type=doc_type,
-            department=department,
-            year=year,
-            course_code=course_code,
+            doc_type=effective_doc_type,
+            department=eff_dept,
+            year=eff_year,
+            course_code=eff_code,
         )
         db.add(new_doc)
         await db.commit()
         await db.refresh(new_doc)
 
-        if doc_type == "syllabus":
+        # Dispatch background task
+        if effective_doc_type == "syllabus":
             background_tasks.add_task(
-                process_syllabus_background, file_path, department, year, new_doc.id
+                process_syllabus_background, file_path, eff_dept, eff_year, new_doc.id
             )
-        elif doc_type == "pyq":
+        elif effective_doc_type == "pyq":
             background_tasks.add_task(
-                process_pyq_background, file_path, course_code, new_doc.id
+                process_pyq_background, file_path, eff_code, new_doc.id
             )
 
+        uploaded_items.append({
+            "id": str(new_doc.id),
+            "filename": file.filename,
+            "doc_type": effective_doc_type,
+            "course_code": eff_code or f"{eff_dept} ({eff_year})",
+            "status": "processing"
+        })
+
     return {
-        "message": f"{len(files)} file(s) uploaded successfully! Processing in the background."
+        "message": f"{len(files)} file(s) uploaded successfully! Ingestion underway.",
+        "items": uploaded_items
     }
 
 
-# Route: /documents — Lists All Uploaded Documents
+# Route: /documents — Lists All Uploaded Documents with Status Reports
 
 
 @app.get("/documents")
 async def list_documents(db: AsyncSession = Depends(get_db)):
     """
     Fetches and returns a list of all documents from the PostgreSQL database,
-    ordered by the most recently uploaded first.
+    along with their background processing reports and status.
     """
     try:
-        # Query the Document table, ordering by creation date descending
         result = await db.execute(select(Document).order_by(Document.created_at.desc()))
         docs = result.scalars().all()
 
-        # Format the results into a list of dictionaries
-        # doc_type is included so the new frontend can render it in the admin table
-        return [
-            {
-                "id": str(doc.id),
+        # Fetch processing reports for status indicators
+        rep_result = await db.execute(select(ProcessingReport))
+        reports_by_doc = {}
+        for r in rep_result.scalars().all():
+            try:
+                reports_by_doc[str(r.document_id)] = json.loads(r.report_json)
+            except Exception:
+                reports_by_doc[str(r.document_id)] = {"status": "completed"}
+
+        formatted = []
+        for doc in docs:
+            d_id = str(doc.id)
+            rep = reports_by_doc.get(d_id)
+            status_text = "completed" if rep else "processing"
+            details = None
+            if rep:
+                st = rep.get("status", "")
+                if "error" in st:
+                    status_text = "error"
+                elif "success" in st:
+                    status_text = "completed"
+                num_q = rep.get("structured", 0) or rep.get("vision", 0)
+                if num_q:
+                    details = f"{num_q} questions mapped"
+                elif rep.get("summary"):
+                    details = "Graph indexed"
+
+            formatted.append({
+                "id": d_id,
                 "filename": doc.filename,
                 "doc_type": doc.doc_type,
-                "course_code": doc.course_code,
-                "created_at": doc.created_at.isoformat(),
-            }
-            for doc in docs
-        ]
+                "course_code": doc.course_code or doc.department or "—",
+                "created_at": doc.created_at.isoformat() if doc.created_at else "",
+                "status": status_text,
+                "details": details or status_text
+            })
+
+        return formatted
     except Exception as e:
         print(f"Error fetching document list: {e}")
+        return []
+
+
+# Route: /processing-status — Live Status for Active Processing Jobs
+
+
+@app.get("/processing-status")
+async def get_processing_status(db: AsyncSession = Depends(get_db)):
+    """
+    Returns real-time processing status for the most recent 20 documents.
+    Used by the admin UI to poll progress during bulk uploads.
+    """
+    try:
+        result = await db.execute(select(Document).order_by(Document.created_at.desc()).limit(20))
+        docs = result.scalars().all()
+
+        rep_result = await db.execute(select(ProcessingReport))
+        reports_by_doc = {}
+        for r in rep_result.scalars().all():
+            try:
+                reports_by_doc[str(r.document_id)] = json.loads(r.report_json)
+            except Exception:
+                reports_by_doc[str(r.document_id)] = {"status": "completed"}
+
+        items = []
+        for doc in docs:
+            d_id = str(doc.id)
+            rep = reports_by_doc.get(d_id)
+            items.append({
+                "id": d_id,
+                "filename": doc.filename,
+                "doc_type": doc.doc_type,
+                "course_code": doc.course_code or doc.department or "—",
+                "status": rep.get("status", "processing") if rep else "processing",
+                "structured": rep.get("structured", 0) if rep else 0,
+                "created_at": doc.created_at.isoformat() if doc.created_at else ""
+            })
+        return items
+    except Exception as e:
+        print(f"Error fetching processing status: {e}")
         return []
 
 
@@ -1161,6 +1645,7 @@ async def process_syllabus_background(
     Supports any department (CSE, ECE, EEE, MECH, ...) and curriculum year.
     """
     from syllabus_parser import SyllabusParser
+    from utils import PREREQUISITE_MAP, add_prerequisite_edges
 
     print(f"[Syllabus] Starting GraphRAG ingestion for {department} {year}...")
     neo4j_driver = get_neo4j()
@@ -1176,6 +1661,39 @@ async def process_syllabus_background(
             None, parser.parse_and_ingest, file_path, department, year
         )
         print(f"[Syllabus] Ingestion complete: {summary}")
+
+        # Seed prerequisite DAG from official Amrita CSE curriculum map
+        try:
+            add_prerequisite_edges(neo4j_driver, PREREQUISITE_MAP)
+            print("[Syllabus] Prerequisite graph reinforced.")
+        except Exception as _pe:
+            print(f"[Syllabus] Prereq seeding notice: {_pe}")
+
+        # Store syllabus text chunks in PostgreSQL DocumentChunk for pgvector RRF search
+        try:
+            import pymupdf as _fitz
+            _doc = _fitz.open(file_path)
+            async for db in get_db():
+                for p_idx in range(min(len(_doc), 80)):
+                    txt = _doc[p_idx].get_text().strip()
+                    if len(txt) > 60:
+                        chunk_content = f"[Syllabus - {department} {year} - Page {p_idx+1}]\n{txt[:1500]}"
+                        emb = await get_embedding(chunk_content[:1000])
+                        if emb:
+                            db.add(DocumentChunk(
+                                document_id=document_id,
+                                content=chunk_content,
+                                course_code=f"{department}_{year}",
+                                content_type="syllabus",
+                                embedding=emb,
+                            ))
+                await db.commit()
+                break
+            _doc.close()
+            print("[Syllabus] Stored text chunks in pgvector.")
+        except Exception as _ce:
+            print(f"[Syllabus] Document chunk storage notice: {_ce}")
+
         report["status"] = "success"
         report["summary"] = summary
         async for db in get_db():

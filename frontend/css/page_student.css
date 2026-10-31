@@ -281,3 +281,328 @@
   border: 1px dashed var(--border); border-radius: var(--r);
   color: var(--text-3); font-size: 13px;
 }
+
+/* Image Upload UI Enhancements */
+.image-preview-wrapper {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 8px;
+  border-radius: var(--r-md);
+  box-shadow: 0 4px 12px rgba(0,0,0,.08);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+  max-width: 150px;
+  max-height: 150px;
+}
+.image-preview-wrapper img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100px;
+  object-fit: contain;
+  display: block;
+}
+.btn-clear-img {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0,0,0,.5);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background .2s;
+}
+.btn-clear-img:hover {
+  background: rgba(0,0,0,.8);
+}
+
+.user-attached-img {
+  max-width: 250px;
+  max-height: 250px;
+  border-radius: var(--r-sm);
+  margin-bottom: 8px;
+  display: block;
+  border: 1px solid var(--border-soft);
+}
+
+/* Lightbox & Image Zooming */
+.bubble img, .pc-img {
+  cursor: zoom-in;
+  transition: opacity 0.2s;
+}
+.bubble img:hover, .pc-img:hover {
+  opacity: 0.9;
+}
+.lightbox {
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  background: rgba(0,0,0,0.85); z-index: 99999;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(5px); cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 90vw; max-height: 90vh;
+  border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  object-fit: contain;
+}
+
+/* Vision AI Loading State */
+.msg-av.ai.vision {
+  background: var(--brand-10);
+  color: var(--brand);
+}
+.vision-bubble {
+  background: var(--brand-10) !important;
+  color: var(--brand) !important;
+  font-weight: 500;
+  display: flex !important;
+  align-items: center;
+  gap: 4px;
+}
+.dot-anim {
+  animation: blink 1.5s infinite steps(4, end);
+}
+@keyframes blink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
+
+/* ==========================================================================
+   Zero-LLM Fast-Path Structured Layouts (Curriculum, Prereq DAG, Course Spec)
+   ========================================================================== */
+.graph-fast-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600; font-family: 'IBM Plex Mono', monospace;
+  background: linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%);
+  color: #065F46; border: 1px solid #A7F3D0;
+  padding: 3px 8px; border-radius: 20px;
+}
+
+.curriculum-result-wrap, .prereq-result-wrap {
+  display: flex; flex-direction: column; gap: 12px;
+  width: 100%;
+}
+
+.curriculum-hdr, .prereq-hdr {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+
+.curriculum-title-wrap {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+
+.curr-code-badge {
+  font-size: 11.5px; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
+  background: var(--brand-10); color: var(--brand);
+  border: 1px solid var(--brand-20); border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.curr-name {
+  margin: 0; font-size: 15px; font-weight: 700; color: var(--text);
+  line-height: 1.3;
+}
+
+.curriculum-units-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+.curriculum-unit-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 12px 14px;
+  box-shadow: var(--shadow-xs); transition: border-color .2s;
+}
+
+.curriculum-unit-card:hover {
+  border-color: var(--brand-20);
+}
+
+.unit-hdr {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+
+.unit-badge {
+  font-size: 11px; font-weight: 700; color: var(--brand);
+  background: var(--brand-5); border: 1px solid var(--brand-20);
+  border-radius: 3px; padding: 1px 6px;
+}
+
+.unit-title {
+  font-size: 13.5px; font-weight: 600; color: var(--text);
+}
+
+.unit-topics {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+
+.topic-pill {
+  font-size: 11.5px; background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--border-soft); border-radius: 12px;
+  padding: 2px 9px; line-height: 1.4;
+}
+
+/* Semester Course Grid */
+.sem-course-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.sem-course-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: transform .15s, border-color .15s;
+}
+
+.sem-course-card:hover {
+  transform: translateY(-2px); border-color: var(--brand-20);
+  box-shadow: var(--shadow-xs);
+}
+
+.sem-card-top {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+
+.sem-code {
+  font-size: 11.5px; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
+  color: var(--brand);
+}
+
+.sem-tags {
+  display: flex; gap: 4px; align-items: center;
+}
+
+.sem-cred, .sem-cat, .sem-ltpc {
+  font-size: 10px; font-weight: 600; padding: 1px 5px;
+  border-radius: 3px; border: 1px solid var(--border);
+}
+
+.sem-cred { background: #F0FDF4; color: #15803D; border-color: #DCFCE7; }
+.sem-cat  { background: #EFF6FF; color: #1D4ED8; border-color: #DBEAFE; }
+.sem-ltpc { background: var(--surface-3); color: var(--text-3); font-family: monospace; }
+
+.sem-name {
+  font-size: 13px; font-weight: 500; color: var(--text);
+  line-height: 1.35;
+}
+
+/* Course Detail Card */
+.course-details-list {
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+.course-detail-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 14px 16px;
+}
+
+.detail-hdr {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+
+.detail-body {
+  display: flex; flex-direction: column; gap: 8px; font-size: 13px;
+}
+
+.detail-row {
+  display: flex; align-items: baseline; gap: 8px;
+}
+
+.detail-label {
+  font-weight: 600; color: var(--text-2); min-width: 140px;
+}
+
+.detail-val {
+  color: var(--text);
+}
+
+.detail-block {
+  display: flex; flex-direction: column; gap: 4px; margin-top: 4px;
+}
+
+.detail-list {
+  margin: 0; padding-left: 20px; color: var(--text-2);
+}
+
+.detail-list li {
+  margin-bottom: 4px;
+}
+
+/* Prerequisite DAG Card */
+.prereq-dag-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 14px 16px;
+  box-shadow: var(--shadow-xs); display: flex; flex-direction: column; gap: 12px;
+}
+
+.prereq-target-box {
+  display: flex; flex-direction: column; gap: 4px;
+}
+
+.prereq-label {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--text-3);
+}
+
+.prereq-target-title {
+  display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text);
+}
+
+.prereq-target-code {
+  font-size: 11px; font-weight: 700; font-family: 'IBM Plex Mono', monospace;
+  background: var(--brand); color: #fff; padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.prereq-deps-wrap {
+  background: var(--surface-2); border: 1px dashed var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px;
+}
+
+.prereq-deps-title {
+  display: flex; align-items: center; gap: 6px; font-size: 12px;
+  font-weight: 600; color: var(--text-2); margin-bottom: 8px;
+}
+
+.prereq-pills-list {
+  display: flex; flex-direction: column; gap: 6px;
+}
+
+.prereq-pill {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--brand); border-radius: 4px;
+  padding: 6px 10px; font-size: 13px; font-weight: 500; color: var(--text);
+}
+
+.prereq-pill svg {
+  color: var(--brand); flex-shrink: 0;
+}
+
+.prereq-empty {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 16px; background: #F0FDF4; border: 1px solid #BBF7D0;
+  border-radius: var(--r-sm); color: #166534;
+}
+
+.similar-courses-list {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+
+.similar-course-chip {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; font-size: 12.5px;
+  cursor: pointer; transition: all .2s; color: var(--text);
+  text-align: left;
+}
+
+.similar-course-chip:hover {
+  border-color: var(--brand); color: var(--brand);
+  background: var(--brand-5); transform: translateY(-1px);
+}
