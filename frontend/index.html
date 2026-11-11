@@ -1,5 +1,5 @@
 <!--
-  ~ 🎓 CurriculumLens - Modular Academic Curriculum Hub
+  ~ 🎓 M.A.C.H. - Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG framework for Campus Knowledge Systems
   ~ Developed as our Final Year Project (FYP).
   ~ Entry point of the application featuring our custom Canvas-based Knowledge Graph animation.
   ~ Fully responsive, semantic HTML, and PWA ready!
@@ -9,11 +9,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign In — CurriculumLens</title>
+<title>Sign In — MACH AI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="src/css/main.css">
-<link rel="stylesheet" href="src/css/pages/login.css">
+<link rel="stylesheet" href="css/main.css?v=2">
+<link rel="stylesheet" href="css/page_login.css?v=2">
 <link rel="manifest" href="./manifest.json">
 <script>
   if ('serviceWorker' in navigator) {
@@ -45,12 +45,13 @@
   <div class="auth-right">
     <div class="login-card">
       <div class="login-card-header">
-        <h2>Sign in to M.A.C.H.</h2>
-        <p>Modular Academic Curriculum Hub — your AI-powered study companion.</p>
+        <h2>Sign in to MACH AI</h2>
+        <p>Multimodel Academic Cognitive Hub — your AI-powered study companion.</p>
       </div>
+      <div id="login-form-panel">
       <div class="form-group">
-        <label>Username</label>
-        <input type="text" id="auth-user" placeholder="Enter your username" autocomplete="username">
+        <label>College email or demo username</label>
+        <input type="text" id="auth-user" placeholder="Enter college email or demo username" autocomplete="username">
       </div>
       <div class="form-group">
         <label>Password</label>
@@ -58,11 +59,11 @@
       </div>
       <div class="auth-error" id="auth-error"></div>
       <div class="btn-group">
-        <button type="button" class="btn btn-primary" id="btn-student" onclick="window.doLogin('student')">
+        <button class="btn btn-primary" id="btn-student" onclick="window.doLogin('student')">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg>
           Student
         </button>
-        <button type="button" class="btn btn-outline" id="btn-admin" onclick="window.doLogin('admin')">
+        <button class="btn btn-outline" id="btn-admin" onclick="window.doLogin('admin')">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Admin
         </button>
@@ -72,10 +73,35 @@
         <div class="auth-demo-row"><span>student / student123</span><span>Student access</span></div>
         <div class="auth-demo-row"><span>admin / admin123</span><span>Admin access</span></div>
       </div>
+      <p style="text-align:center;margin:16px 0 0;color:var(--text-3);font-size:14px;">New student? <button style="border:0;background:none;color:var(--brand);font:inherit;font-weight:700;cursor:pointer;" type="button" onclick="window.showRegistration()">Create account</button></p>
+      </div>
+      <div id="registration-panel" style="display:none;">
+        <h3 style="margin:12px 0;">Student registration</h3>
+        <div class="form-group"><label>Full name</label><input id="reg-name" type="text" autocomplete="name" required></div>
+        <div class="field-row">
+          <div class="form-group" style="flex:1"><label>Age</label><input id="reg-age" type="number" min="16" max="100" required></div>
+          <div class="form-group" style="flex:1"><label>Gender</label><select id="reg-gender" required><option value="">Select</option><option>Female</option><option>Male</option><option>Other</option><option>Prefer not to say</option></select></div>
+        </div>
+        <div class="form-group"><label>Roll number</label><input id="reg-roll" type="text" autocomplete="off" required></div>
+        <div class="form-group"><label>College email</label><input id="reg-email" type="email" autocomplete="email" required></div>
+        <div class="form-group"><label>Password (at least 8 characters)</label><input id="reg-password" type="password" autocomplete="new-password" required minlength="8"></div>
+        <div class="field-row">
+          <div class="form-group" style="flex:1"><label>Department</label><select id="reg-dept" required><option value="">Select</option><option>CSE</option><option>AIE</option><option>ECE</option><option>EEE</option><option>MECH</option><option>CYS</option></select></div>
+          <div class="form-group" style="flex:1"><label>Study year</label><select id="reg-study-year" required><option value="">Select</option><option>I</option><option>II</option><option>III</option><option>IV</option></select></div>
+        </div>
+        <div class="form-group"><label>Academic year</label><input id="reg-academic-year" type="text" placeholder="e.g. 2026-2027" required></div>
+        <div class="field-row">
+          <div class="form-group" style="flex:1"><label>Semester</label><select id="reg-semester" required><option value="">Select</option><option>I</option><option>II</option><option>III</option><option>IV</option><option>V</option><option>VI</option><option>VII</option><option>VIII</option></select></div>
+          <div class="form-group" style="flex:1"><label>Class / section</label><input id="reg-section" type="text" placeholder="e.g. A" required></div>
+        </div>
+        <div class="auth-error" id="register-error"></div>
+        <button class="btn btn-primary" id="btn-register" type="button" onclick="window.doRegister()">Create student account</button>
+        <p style="text-align:center;margin:14px 0;color:var(--text-3);font-size:14px;">Already registered? <button style="border:0;background:none;color:var(--brand);font:inherit;font-weight:700;cursor:pointer;" type="button" onclick="window.showLogin()">Sign in</button></p>
+      </div>
     </div>
   </div>
 
 </div>
-<script type="module" src="src/js/pages/login.js"></script>
+<script type="module" src="js/page_login.js?v=3"></script>
 </body>
 </html>
