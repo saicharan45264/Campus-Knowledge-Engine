@@ -55,6 +55,24 @@ def _extract_semester_number(query: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _extract_calendar_month(query: str) -> tuple[int, int] | None:
+    """Return (year, month) for month-level calendar requests without a day."""
+    q = query.lower()
+    month_map = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    for name, month in month_map.items():
+        match = re.search(rf"\b{name}\s+(20\d{{2}})\b", q)
+        if match:
+            return int(match.group(1)), month
+    match = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])\b", q)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None
+
+
 def _calendar_milestone_kind(query: str) -> str | None:
     q = query.lower().replace("-", " ")
     if re.search(r"\b(reopen(?:ing)?|re open|re opening|resume|resumption)\b", q): return "reopen"
@@ -84,6 +102,8 @@ def _classify_calendar_request(query: str) -> str | None:
     if asks_saturdays and re.search(r"\b(working|instructional|class)\b", q):
         if asks_next: return "next_working_saturday"
         if asks_all or "saturdays" in q: return "working_saturdays"
+    if _extract_calendar_month(query) and re.search(r"\b(events?|calendar|scheduled|happening|what.s on)\b", q):
+        return "month_events"
     if _extract_semester_number(q) is not None and _calendar_milestone_kind(q): return "milestone_lookup"
     if festivals and any(w in q for w in ("when", "date", "scheduled", "schedule", "from", "celebrat")): return "festival_event"
     return None
@@ -669,9 +689,10 @@ async def answer_calendar_query(
     q_norm = q_lower.replace("-", " ").replace("–", " ")
 
     # 0a. Dynamic Semester Classes Start / Re-opening Milestones
-    if any(k in q_norm for k in ["classes start", "classes begin", "semester commencement", "reopening date", "college reopen", "when do classes", "when does classes", "semester start", "semester begin", "sem start", "sem begin"]) or (
+    calendar_milestone = _calendar_milestone_kind(q_norm)
+    if calendar_milestone not in {"midterm", "endsem"} and (any(k in q_norm for k in ["classes start", "classes begin", "semester commencement", "reopening date", "college reopen", "when do classes", "when does classes", "semester start", "semester begin", "sem start", "sem begin"]) or (
         "commence" in q_norm and any(w in q_norm for w in ["class", "semester", "sem"])
-    ):
+    )):
         asks_even = bool(re.search(r"\b(even\s*sem(?:ester)?)\b", q_norm))
         asks_odd = bool(re.search(r"\b(odd\s*sem(?:ester)?)\b", q_norm))
 
@@ -722,7 +743,7 @@ async def answer_calendar_query(
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans, "events": [{"date": e.start_date.strftime("%B %d, %Y"), "name": e.name} for e in all_commence_events]}
 
     # 0b. Dynamic Mid-Term Examination Dates / Start
-    if re.search(r"\b(mid\s*[- ]?term|mid\s*[- ]?sem)\b", q_norm) and any(w in q_norm for w in ["start", "begin", "commence", "commencement", "when", "date", "dates", "schedule"]):
+    if re.search(r"\b(mid\s*[- ]?term|mid\s*[- ]?sem)\b", q_norm) and any(w in q_norm for w in ["start", "begin", "commence", "commencement", "when", "date", "dates", "schedule"]) and _extract_semester_number(question) is None:
         asks_even = bool(re.search(r"\b(even\s*sem(?:ester)?)\b", q_norm))
         asks_odd = bool(re.search(r"\b(odd\s*sem(?:ester)?)\b", q_norm))
 
@@ -765,7 +786,7 @@ async def answer_calendar_query(
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans}
 
     # 0c. Dynamic End-Semester Examination Dates / Start
-    if re.search(r"\b(end\s*[- ]?sem|end\s*[- ]?semester|final\s+exam)\b", q_norm) and any(w in q_norm for w in ["start", "begin", "commence", "commencement", "when", "date", "dates", "schedule"]) and not re.search(r"\b2\d[a-z]{3}\d{3}\b", q_lower):
+    if re.search(r"\b(end\s*[- ]?sem|end\s*[- ]?semester|final\s+exam)\b", q_norm) and any(w in q_norm for w in ["start", "begin", "commence", "commencement", "when", "date", "dates", "schedule"]) and not re.search(r"\b2\d[a-z]{3}\d{3}\b", q_lower) and _extract_semester_number(question) is None:
         asks_even = bool(re.search(r"\b(even\s*sem(?:ester)?)\b", q_norm))
         asks_odd = bool(re.search(r"\b(odd\s*sem(?:ester)?)\b", q_norm))
 
@@ -827,6 +848,14 @@ async def answer_calendar_query(
         reference_date = _calendar_reference_date(question)
         if mode in {"holiday_list", "next_holiday", "festival_holidays", "next_festival_holiday", "festival_event"}:
             holidays = _named_holidays(calendar_days, academic_events)
+            requested_month = _extract_calendar_month(question)
+            if requested_month:
+                year, month = requested_month
+                holidays = [
+                    h for h in holidays
+                    if date.fromisoformat(h["date_iso"]).year == year
+                    and date.fromisoformat(h["date_iso"]).month == month
+                ]
             if mode in {"festival_holidays", "next_festival_holiday", "festival_event"}:
                 aliases = _festival_match_names(question)
                 holidays = [h for h in holidays if _event_matches_festival(h["name"], aliases)]
@@ -867,6 +896,38 @@ async def answer_calendar_query(
             table = "\n".join(f"| **{s['date']}** | {s['natural_weekday']} | **{s['applied_timetable']}** |" for s in substitutions) or "| — | — | No working Saturdays found |"
             answer = "### Working Saturdays (AY 2026–2027)\n\n| Date | Day | Timetable followed |\n| :--- | :--- | :--- |\n" + table
         return {"calendar_mode": mode, "markdown_answer": answer, "overrides": substitutions}
+
+    if mode == "month_events":
+        requested_month = _extract_calendar_month(question)
+        if not requested_month:
+            return {"calendar_mode": mode, "markdown_answer": "Please include a month and year so I can look up the right calendar events."}
+        year, month = requested_month
+        event_result = await db.execute(select(AcademicEvent).order_by(AcademicEvent.start_date))
+        month_events = [
+            e for e in event_result.scalars().all()
+            if e.start_date.year == year
+            and e.start_date.month == month
+            and ((e.event_category or "").lower() != "timetable_override" or "timetable" in q_norm or "override" in q_norm or "substitution" in q_norm)
+        ]
+        events = [
+            {
+                "date": e.start_date.strftime("%B %d, %Y"),
+                "date_iso": e.start_date.date().isoformat(),
+                "name": e.name,
+                "category": e.event_category or "Event",
+            }
+            for e in month_events
+        ]
+        if events:
+            answer = None  # The frontend renders the structured event cards once.
+        else:
+            answer = f"No academic events are listed for {date(year, month, 1).strftime('%B %Y')} in the indexed calendar."
+        return {
+            "calendar_mode": mode,
+            "calendar_period": date(year, month, 1).strftime("%B %Y"),
+            "markdown_answer": answer,
+            "events": events,
+        }
 
 
     # ---------------------------------------------------------

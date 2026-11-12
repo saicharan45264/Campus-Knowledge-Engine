@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import time
 from typing import Optional, List, Dict, Any, Union
 
 import httpx
@@ -38,6 +39,9 @@ OLLAMA_MODEL = settings.ollama_model
 
 # This small, fast model (137 million parameters) is used ONLY to convert text into math vectors.
 OLLAMA_EMBED_MODEL = settings.ollama_embed_model
+
+# PYQ topic assignment is deliberately retrieval-only. Generation remains
+# available for answering student queries, but is not used by this mapper.
 
 # -----------------------------------------------------------------------------
 # Cloudinary Configuration
@@ -1001,31 +1005,39 @@ async def map_questions_to_kg(
     questions: list,
     document_id: str | None = None,
     image_url: str | None = None,
+    page_number: int | None = None,
+    chunk_index: int | None = None,
 ):
     if not questions:
-        return
+        return {"mapped": 0, "unmapped": 0, "total": 0}
 
-    syllabus_context = fetch_course_topics(neo4j_driver, course_code)
-    print(
-        f"[PYQ Vision] Fetched {len(syllabus_context.split(chr(10)))} topics from syllabus. Running semantic mapping via LLM..."
-    )
+    canonical_course_code = (course_code or "").strip().upper()
+    normalized_questions = []
+    for q in questions:
+        if isinstance(q, str):
+            q = {"text": q, "question_number": "Unknown", "implicit_formulas": []}
+        normalized = dict(q)
+        normalized["question_text"] = str(q.get("text", ""))
+        normalized["course_code"] = canonical_course_code
+        normalized_questions.append(normalized)
 
-    mapping = await semantic_map_questions_to_topics(
-        course_code, syllabus_context, questions
-    )
-    print(f"[PYQ Vision] Semantic mapper returned {len(mapping)} matched questions.")
+    syllabus_context = fetch_course_topics(neo4j_driver, canonical_course_code)
+    no_syllabus = not syllabus_context or syllabus_context == "No syllabus found."
+    if no_syllabus:
+        reason = f"No syllabus topics are indexed for admin-selected course {canonical_course_code}."
+        mapping = {
+            i: {"status": "unmapped", "mappings": [], "suggestions": [], "candidates": [], "reason": reason}
+            for i in range(len(normalized_questions))
+        }
+    else:
+        mapping = await semantic_map_questions_to_topics(
+            canonical_course_code, syllabus_context, normalized_questions
+        )
+    print(f"[PYQ Vision] Classified {len(mapping)} questions for {canonical_course_code}.")
 
     with neo4j_driver.session() as session:
-        for i, q in enumerate(questions):
-            if isinstance(q, str):
-                q = {
-                    "text": q,
-                    "question_number": "Unknown",
-                    "likely_topic": "General",
-                    "implicit_formulas": [],
-                }
-
-            q_text = str(q.get("text", ""))
+        for i, q in enumerate(normalized_questions):
+            q_text = q["question_text"]
 
             raw_formulas = q.get("implicit_formulas", [])
             if not isinstance(raw_formulas, list):
@@ -1038,45 +1050,121 @@ async def map_questions_to_kg(
 
             q_num = str(q.get("question_number", ""))
             marks = str(q.get("marks", ""))
+            question_id = hashlib.md5(
+                f"{document_id}_{canonical_course_code}_{page_number}_{chunk_index}_{q_num}_{i}_{q_text}".encode()
+            ).hexdigest()
+            mapping_item = mapping.get(i, {"status": "unmapped", "mappings": [], "candidates": []})
 
             # Create question and attach to course
-            q_result = session.run(
+            session.run(
                 """
                 MERGE (c:Course {code: $c_code})
-                CREATE (q:Question {
-                    text: $q_text, 
-                    question_number: $q_num, 
-                    marks: $marks, 
-                    implicit_formulas: $implicit_formulas,
-                    document_id: $doc_id,
-                    course_code: $c_code,
-                    image_url: $image_url
-                })
+                MERGE (q:Question {id: $q_id})
+                SET q.text = $q_text,
+                    q.original_text = $q_text,
+                    q.question_number = $q_num,
+                    q.subpart_label = coalesce($subpart_label, ''),
+                    q.marks = $marks,
+                    q.implicit_formulas = $implicit_formulas,
+                    q.document_id = $doc_id,
+                    q.course_code = $c_code,
+                    q.page_number = $page_number,
+                    q.source_chunk = $chunk_index,
+                    q.image_url = $image_url,
+                    q.mapping_status = $mapping_status,
+                    q.mapping_reason = $mapping_reason,
+                    q.mapping_candidates = $mapping_candidates,
+                    q.mapper_version = 'pyq-topic-map-v8'
                 MERGE (q)-[:BELONGS_TO]->(c)
-                RETURN id(q) as internal_id
             """,
-                c_code=course_code,
+                q_id=question_id,
+                c_code=canonical_course_code,
                 q_text=q_text,
                 q_num=q_num,
                 marks=marks,
                 implicit_formulas=implicit_formulas,
                 doc_id=str(document_id) if document_id else "",
+                page_number=page_number or 0,
+                chunk_index=chunk_index or 0,
                 image_url=str(image_url) if image_url else "",
-            ).single()
-
-            if q_result:
-                internal_id = q_result["internal_id"]
-                topic_ids = mapping.get(i, [])
-                for t_id in topic_ids:
-                    session.run(
-                        """
-                        MATCH (q) WHERE id(q) = $internal_id
-                        MATCH (t:Topic {topic_id: $t_id})
-                        MERGE (q)-[:TESTS]->(t)
+                subpart_label=q.get("subpart_label"),
+                mapping_status=mapping_item.get("status", "unmapped"),
+                mapping_reason=mapping_item.get("reason", ""),
+                mapping_candidates=json.dumps(mapping_item.get("candidates", [])),
+            )
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[legacy:TESTS]->(:Topic) DELETE legacy",
+                q_id=question_id,
+            )
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[old:TESTS_TOPIC]->(:Topic) DELETE old",
+                q_id=question_id,
+            )
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[old:SUGGESTED_TOPIC]->(:Topic) DELETE old",
+                q_id=question_id,
+            )
+            for topic in mapping_item.get("mappings", []):
+                session.run(
+                    """
+                    MATCH (q:Question {id: $q_id})
+                    MATCH (t:Topic {topic_id: $topic_id})
+                    MERGE (q)-[r:TESTS_TOPIC]->(t)
+                    SET r.confidence = $confidence,
+                        r.semantic_score = $semantic_score,
+                        r.keyword_score = $keyword_score,
+                        r.evidence = $evidence,
+                        r.mapping_method = $mapping_method,
+                        r.mapper_version = $mapper_version,
+                        r.mapping_status = 'auto_approved',
+                        r.mapped_at = datetime()
                     """,
-                        internal_id=internal_id,
-                        t_id=t_id,
-                    )
+                    q_id=question_id,
+                    topic_id=topic["topic_id"],
+                    confidence=topic["confidence"],
+                    semantic_score=topic["semantic_score"],
+                    keyword_score=topic["keyword_score"],
+                    evidence=topic["evidence"],
+                    mapping_method=topic["mapping_method"],
+                    mapper_version=topic["mapper_version"],
+                )
+            for topic in mapping_item.get("suggestions", []):
+                session.run(
+                    """
+                    MATCH (q:Question {id: $q_id})
+                    MATCH (t:Topic {topic_id: $topic_id})
+                    MERGE (q)-[r:SUGGESTED_TOPIC]->(t)
+                    SET r.confidence = $confidence,
+                        r.semantic_score = $semantic_score,
+                        r.keyword_score = $keyword_score,
+                        r.retrieval_score = $retrieval_score,
+                        r.evidence = $evidence,
+                        r.mapping_method = $mapping_method,
+                        r.mapper_version = $mapper_version,
+                        r.mapping_status = 'provisional',
+                        r.suggested_at = datetime()
+                    """,
+                    q_id=question_id,
+                    topic_id=topic["topic_id"],
+                    confidence=topic["confidence"],
+                    semantic_score=topic["semantic_score"],
+                    keyword_score=topic["keyword_score"],
+                    retrieval_score=topic["retrieval_score"],
+                    evidence=topic["evidence"],
+                    mapping_method=topic["mapping_method"],
+                    mapper_version=topic["mapper_version"],
+                )
+
+    return {
+        "mapped": sum(item.get("status") == "mapped" for item in mapping.values()),
+        "suggested": sum(bool(item.get("suggestions")) for item in mapping.values()),
+        "unmapped": sum(not item.get("mappings") and not item.get("suggestions") for item in mapping.values()),
+        "total": len(normalized_questions),
+        "mapping_error": (
+            f"No syllabus topics are indexed for admin-selected course {canonical_course_code}."
+            if no_syllabus else None
+        ),
+    }
 
 
 import hashlib
@@ -1344,6 +1432,38 @@ def extract_pyq_structured(
         r"^[ \t]{0,5}((?:Q(?:uestion)?\s*)?\d{1,2})[\.\)]\s+",
         re.MULTILINE | re.IGNORECASE,
     )
+    SUBPART_RE = re.compile(
+        r"^[ \t]{0,8}(?:\((?P<paren>[a-z]|i{1,3}|iv|v|vi{0,3}|ix|x)\)|"
+        r"(?P<bare>[a-z])\))\s+",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    def split_subparts(text: str) -> list[tuple[str | None, str, str]]:
+        """Return (label, question text with stem, subpart text) records.
+
+        Split only when at least two clearly labeled subparts are present;
+        isolated parenthesized examples remain part of the parent question.
+        """
+        matches = list(SUBPART_RE.finditer(text or ""))
+        if len(matches) < 2:
+            return [(None, text.strip(), text.strip())]
+
+        labels = [m.group("paren") or m.group("bare") for m in matches]
+        if len(set(label.lower() for label in labels)) != len(labels):
+            return [(None, text.strip(), text.strip())]
+
+        stem = text[:matches[0].start()].strip()
+        parts = []
+        for idx, match in enumerate(matches):
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            body = text[match.end():end].strip()
+            if len(body) < 8:
+                return [(None, text.strip(), text.strip())]
+            label = labels[idx].lower()
+            question = "\n".join(part for part in (stem, body) if part)
+            parts.append((label, question, body))
+        return parts
+
     SCALE = 2.0  # Render pages at 2x resolution for crisp crops
 
     # -------------------------------------------------------------------------
@@ -1437,6 +1557,7 @@ def extract_pyq_structured(
                         "page_num": page_num,
                         "y_start": y_start_pdf,  # PDF coordinate units
                         "q_text": clean_text,
+                        "original_text": raw_text,
                         "co_tag": f"CO{co_m.group(1)}" if co_m else None,
                         "btl_tag": f"BTL{btl_m.group(1)}" if btl_m else None,
                         "marks": marks_val,
@@ -1563,26 +1684,41 @@ def extract_pyq_structured(
                         f"[PYQ Crop] Failed for Q{span['q_num']} page {page_num + 1}: {crop_err}"
                     )
 
-            # Build the unique question ID (include document_id to prevent cross-PDF collisions)
-            q_id = hashlib.md5(
-                f"{document_id}_{course_code}_{span['q_num']}_p{page_num}".encode()
-            ).hexdigest()
-
-            structured_questions.append(
-                {
-                    "id": q_id,
-                    "question_number": span["q_num"],
-                    "question_text": span["q_text"],
-                    "co_tag": span["co_tag"],
-                    "btl_tag": span["btl_tag"],
-                    "marks": span["marks"],
-                    "has_figure": span["has_figure"],
-                    "course_code": course_code,
-                    "exam_name": "PYQ Exam",
-                    "image_url": image_url,
-                    "image_hash": image_hash if image_url else None,
-                }
+            # Include the source location in the stable identity. A question
+            # number can repeat within a paper, especially across sections.
+            location = (
+                f"{document_id}_{course_code}_{span['q_num']}_"
+                f"p{page_num + 1}_y{y_start_pdf:.1f}"
             )
+            parent_id = hashlib.md5(location.encode()).hexdigest()
+
+            for subpart_label, question_text, subpart_text in split_subparts(span["q_text"]):
+                q_id = (
+                    hashlib.md5(f"{location}_part_{subpart_label}".encode()).hexdigest()
+                    if subpart_label
+                    else parent_id
+                )
+                structured_questions.append(
+                    {
+                        "id": q_id,
+                        "parent_question_id": parent_id if subpart_label else None,
+                        "question_number": span["q_num"],
+                        "subpart_label": subpart_label,
+                        "question_text": question_text,
+                        "subpart_text": subpart_text,
+                        "original_text": span["original_text"],
+                        "page_number": page_num + 1,
+                        "source_y": round(y_start_pdf, 1),
+                        "co_tag": span["co_tag"],
+                        "btl_tag": span["btl_tag"],
+                        "marks": span["marks"],
+                        "has_figure": span["has_figure"],
+                        "course_code": course_code,
+                        "exam_name": "PYQ Exam",
+                        "image_url": image_url,
+                        "image_hash": image_hash if image_url else None,
+                    }
+                )
 
         doc.close()
         return structured_questions
@@ -1596,31 +1732,63 @@ def extract_pyq_structured(
 
 
 async def map_pyq_structured_to_kg(
-    neo4j_driver, structured_questions: list[dict], document_id: str | None = None
-):
+    neo4j_driver,
+    structured_questions: list[dict],
+    course_code: str,
+    document_id: str | None = None,
+) -> dict:
     if not structured_questions:
-        return
+        return {"mapped": 0, "unmapped": 0, "total": 0}
 
-    c_code_overall = structured_questions[0]["course_code"]
-    syllabus_context = fetch_course_topics(neo4j_driver, c_code_overall)
-    print(
-        f"[PYQ] Fetched {len(syllabus_context.split(chr(10)))} topics from syllabus. Running semantic mapping via LLM..."
-    )
+    # The admin-selected course code is authoritative. Do not infer it from
+    # question text or use per-question metadata to choose the syllabus.
+    canonical_course_code = (course_code or "").strip().upper()
+    if not canonical_course_code:
+        raise ValueError("An admin-selected course code is required to map PYQs.")
 
-    mapping = await semantic_map_questions_to_topics(
-        c_code_overall, syllabus_context, structured_questions
-    )
-    print(f"[PYQ] Semantic mapper returned {len(mapping)} matched questions.")
+    # Normalize every question to the same admin-selected course before either
+    # topic matching or Neo4j persistence.
+    authoritative_questions = [
+        {**question, "course_code": canonical_course_code}
+        for question in structured_questions
+    ]
+
+    syllabus_context = fetch_course_topics(neo4j_driver, canonical_course_code)
+    no_syllabus = not syllabus_context or syllabus_context == "No syllabus found."
+    if no_syllabus:
+        mapping = {
+            i: {
+                "status": "unmapped",
+                "mappings": [],
+                "candidates": [],
+                "reason": (
+                    f"No syllabus topics are indexed for admin-selected course "
+                    f"'{canonical_course_code}'."
+                ),
+            }
+            for i in range(len(authoritative_questions))
+        }
+    else:
+        mapping = await semantic_map_questions_to_topics(
+            canonical_course_code, syllabus_context, authoritative_questions
+        )
+
+    if not no_syllabus:
+        print(
+            f"[PYQ] Fetched {len(syllabus_context.split(chr(10)))} topics for "
+            f"admin-selected course {canonical_course_code}. Running topic mapping..."
+        )
+    print(f"[PYQ] Retrieval mapper processed {len(mapping)} questions.")
 
     with neo4j_driver.session() as session:
-        for i, q in enumerate(structured_questions):
+        for i, q in enumerate(authoritative_questions):
             q_id = q["id"]
             q_text = q["question_text"]
             btl = q["btl_tag"]
             marks = q["marks"]
             has_fig = q["has_figure"]
             co_tag = q["co_tag"]
-            c_code = q["course_code"]
+            c_code = canonical_course_code
             image_url = q.get("image_url", "")
             q_num = q.get("question_number", "")
 
@@ -1635,7 +1803,17 @@ async def map_pyq_structured_to_kg(
                     q.image_url = $image_url,
                     q.document_id = $doc_id,
                     q.course_code = $c_code,
-                    q.question_number = $q_num
+                    q.question_number = $q_num,
+                    q.subpart_label = $subpart_label,
+                    q.subpart_text = $subpart_text,
+                    q.original_text = $original_text,
+                    q.page_number = $page_number,
+                    q.source_y = $source_y,
+                    q.parent_question_id = $parent_question_id,
+                    q.mapping_status = $mapping_status,
+                    q.mapping_reason = $mapping_reason,
+                    q.mapping_candidates = $mapping_candidates,
+                    q.mapper_version = $mapper_version
                 MERGE (c:Course {code: $c_code})
                 MERGE (q)-[:BELONGS_TO]->(c)
                 MERGE (c)-[:TESTED_BY]->(q)
@@ -1651,6 +1829,33 @@ async def map_pyq_structured_to_kg(
                 image_url=image_url,
                 doc_id=str(document_id) if document_id else "",
                 q_num=q_num,
+                subpart_label=q.get("subpart_label") or "",
+                subpart_text=q.get("subpart_text") or q_text,
+                original_text=q.get("original_text") or q_text,
+                page_number=int(q.get("page_number") or 0),
+                source_y=float(q.get("source_y") or 0),
+                parent_question_id=q.get("parent_question_id") or "",
+                mapping_status=mapping.get(i, {}).get("status", "unmapped"),
+                mapping_reason=mapping.get(i, {}).get("reason", ""),
+                mapping_candidates=json.dumps(mapping.get(i, {}).get("candidates", [])),
+                    mapper_version=mapping.get(i, {}).get("mapper_version", "visionmodel-hybrid-v1"),
+            )
+
+            # Remove legacy duplicate edges and replace stale mappings on reingest.
+            session.run(
+                """
+                MATCH (q:Question {id: $q_id})-[legacy:TESTS]->(:Topic)
+                DELETE legacy
+                """,
+                q_id=q_id,
+            )
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[old:TESTS_TOPIC]->(:Topic) DELETE old",
+                q_id=q_id,
+            )
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[old:SUGGESTED_TOPIC]->(:Topic) DELETE old",
+                q_id=q_id,
             )
 
             # Map to BloomLevel if btl present
@@ -1681,17 +1886,61 @@ async def map_pyq_structured_to_kg(
                 )
 
             # Semantic topic mapping (dual edge: TESTS + TESTS_TOPIC)
-            topic_ids = mapping.get(i, [])
-            for t_id in topic_ids:
+            topic_mapping = mapping.get(i, {})
+            for topic in topic_mapping.get("mappings", []):
                 session.run(
                     """
                     MATCH (q:Question {id: $q_id})
-                    MATCH (t:Topic {topic_id: $t_id})
-                    MERGE (q)-[:TESTS]->(t)
-                    MERGE (q)-[:TESTS_TOPIC]->(t)
+                    MATCH (:Course {code: $c_code})-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic {topic_id: $t_id})
+                    MERGE (q)-[r:TESTS_TOPIC]->(t)
+                    SET r.confidence = $confidence,
+                        r.retrieval_score = $confidence,
+                        r.semantic_score = $semantic_score,
+                        r.keyword_score = $keyword_score,
+                        r.evidence = $evidence,
+                        r.mapping_method = $mapping_method,
+                        r.mapper_version = $mapper_version,
+                        r.mapping_status = 'auto_approved',
+                        r.mapped_at = datetime()
                 """,
                     q_id=q_id,
-                    t_id=t_id,
+                    c_code=c_code,
+                    t_id=topic["topic_id"],
+                    confidence=topic["confidence"],
+                    semantic_score=topic["semantic_score"],
+                    keyword_score=topic["keyword_score"],
+                    evidence=topic["evidence"],
+                    mapping_method=topic["mapping_method"],
+                    mapper_version=topic["mapper_version"],
+                )
+
+            for topic in topic_mapping.get("suggestions", []):
+                session.run(
+                    """
+                    MATCH (q:Question {id: $q_id})
+                    MATCH (:Course {code: $c_code})-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic {topic_id: $t_id})
+                    MERGE (q)-[r:SUGGESTED_TOPIC]->(t)
+                    SET r.confidence = $confidence,
+                        r.retrieval_score = $retrieval_score,
+                        r.semantic_score = $semantic_score,
+                        r.keyword_score = $keyword_score,
+                        r.retrieval_score = $retrieval_score,
+                        r.evidence = $evidence,
+                        r.mapping_method = $mapping_method,
+                        r.mapper_version = $mapper_version,
+                        r.mapping_status = 'provisional',
+                        r.suggested_at = datetime()
+                    """,
+                    q_id=q_id,
+                    c_code=c_code,
+                    t_id=topic["topic_id"],
+                    confidence=topic["confidence"],
+                    semantic_score=topic["semantic_score"],
+                    keyword_score=topic["keyword_score"],
+                    retrieval_score=topic["retrieval_score"],
+                    evidence=topic["evidence"],
+                    mapping_method=topic["mapping_method"],
+                    mapper_version=topic["mapper_version"],
                 )
 
             # Map to CO if exists
@@ -1704,6 +1953,17 @@ async def map_pyq_structured_to_kg(
                     MERGE (co)-[:BELONGS_TO]->(c)
                 """
                 session.run(co_query, q_id=q_id, c_code=c_code, co_id=co_tag)
+
+    return {
+        "mapped": sum(item.get("status") == "mapped" for item in mapping.values()),
+        "suggested": sum(bool(item.get("suggestions")) for item in mapping.values()),
+        "unmapped": sum(not item.get("mappings") and not item.get("suggestions") for item in mapping.values()),
+        "total": len(authoritative_questions),
+        "mapping_error": (
+            f"No syllabus topics are indexed for course {canonical_course_code}."
+            if no_syllabus else None
+        ),
+    }
 
 
 def execute_neo4j_pyq_search(neo4j_driver, question: str) -> list:
@@ -1947,7 +2207,8 @@ def fetch_course_topics(neo4j_driver, course_code: str) -> str:
         records = session.run(
             """
             MATCH (c:Course {code: $c_code})-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-            RETURN u.title AS unit, t.topic_id AS topic_id, t.name AS topic_name
+            RETURN u.title AS unit, t.topic_id AS topic_id, t.name AS topic_name,
+                   coalesce(t.description, '') AS description
             ORDER BY u.title, t.order
         """,
             c_code=course_code,
@@ -1958,7 +2219,11 @@ def fetch_course_topics(neo4j_driver, course_code: str) -> str:
 
     syllabus = []
     for r in records:
-        syllabus.append(f"[{r['topic_id']}] {r['unit']} - {r['topic_name']}")
+        description = (r.get("description") or "").strip()
+        syllabus.append(
+            f"[{r['topic_id']}] Unit: {r['unit']} | Topic: {r['topic_name']}"
+            + (f" | Description: {description}" if description else "")
+        )
     return "\n".join(syllabus)
 
 
@@ -1991,13 +2256,23 @@ def _expand_topic_acronyms(text: str) -> str:
 
 
 def _topic_keyword_overlap(q_text: str, topic_name: str) -> float:
-    stop = {'and', 'the', 'for', 'with', 'in', 'of', 'to', 'a', 'an', 'on', 'by', 'from', 'at', 'as', 'is', 'are', 'using'}
-    t_words = [w.strip(".,()[]:'\"") for w in topic_name.lower().split() if len(w) > 2 and w not in stop]
-    q_lower = _expand_topic_acronyms(q_text).lower()
-    if not t_words:
+    """Return lexical topic-name coverage using token boundaries."""
+    stop = {
+        "and", "the", "for", "with", "in", "of", "to", "a", "an", "on",
+        "by", "from", "at", "as", "is", "are", "using", "what", "which",
+        "explain", "describe", "discuss", "derive", "show", "find", "calculate",
+    }
+    token_re = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+    query = _expand_topic_acronyms(q_text).lower()
+    query_tokens = {token for token in token_re.findall(query) if len(token) > 2 and token not in stop}
+    title_tokens = {token for token in token_re.findall(topic_name.lower()) if len(token) > 2 and token not in stop}
+    if not title_tokens:
         return 0.0
-    matches = sum(1 for w in t_words if w in q_lower)
-    return matches / len(t_words)
+    title_coverage = len(query_tokens & title_tokens) / len(title_tokens)
+    normalized_title = " ".join(token_re.findall(topic_name.lower()))
+    if normalized_title and re.search(rf"\b{re.escape(normalized_title)}\b", query):
+        return 1.0
+    return min(1.0, title_coverage)
 
 
 def _topic_cosine_similarity(v1, v2) -> float:
@@ -2010,67 +2285,137 @@ def _topic_cosine_similarity(v1, v2) -> float:
 async def semantic_map_questions_to_topics(
     course_code: str, syllabus_context: str, questions: list
 ) -> dict:
-    """
-    Accurately maps every question to its specific Topic node in Neo4j using
-    a hybrid dense vector embedding + morphological keyword overlap scoring function.
-    Bypasses token-heavy external LLM calls to prevent timeouts and guarantees
-    every question connects to its genuine topic rather than falling back to Unit 1 Topic 1.
+    """Rank questions against only the topics in the admin-selected course.
+
+    This follows the VisionModel mapper: embed each topic and question, combine
+    cosine similarity with keyword overlap at equal weight, select the top
+    topic, and optionally keep a close runner-up. The score is a retrieval
+    score, not a calibrated probability. No LLM or review queue is used.
     """
     if not syllabus_context or syllabus_context == "No syllabus found.":
         return {}
 
-    # Parse syllabus topics: [{topic_id}] {unit} - {topic_name}
+    confirmed_threshold = 0.70
+    second_topic_threshold = 0.65
+    second_topic_ratio = 0.88
+    mapper_version = "visionmodel-hybrid-v1"
+
     topics = []
     for line in syllabus_context.split("\n"):
-        line_clean = line.strip()
-        if not line_clean:
+        match = re.match(r"\[(.*?)\]\s*(.*)", line.strip())
+        if not match:
             continue
-        m = re.match(r"\[(.*?)\]\s*(.*)", line_clean)
-        if m:
-            tid = m.group(1)
-            full_name = m.group(2)
-            tname = full_name.split(" - ")[-1] if " - " in full_name else full_name
-            topics.append({"id": tid, "name": tname, "full": full_name})
-
+        fields = [field.strip() for field in match.group(2).split(" | ")]
+        unit = fields[0].removeprefix("Unit:").strip() if fields else ""
+        name = next((field.removeprefix("Topic:").strip() for field in fields if field.startswith("Topic:")), "")
+        description = next((field.removeprefix("Description:").strip() for field in fields if field.startswith("Description:")), "")
+        if match.group(1) and name:
+            topics.append({
+                "id": match.group(1),
+                "name": name,
+                "unit": unit,
+                "description": description,
+            })
     if not topics:
         return {}
 
-    fallback_topic = topics[0]["id"]
-    final_mapping = {}
+    # fetch_course_topics already limits this list to the admin-selected course.
+    topic_texts = [
+        f"{topic['unit']} - {topic['name']}" + (f". {topic['description']}" if topic['description'] else "")
+        for topic in topics
+    ]
+    topic_embeddings = await asyncio.gather(*[
+        get_embedding(topic_text[:1200]) for topic_text in topic_texts
+    ])
+    question_texts = [
+        (question.get("question_text") or question.get("text") or "").strip()
+        for question in questions
+    ]
+    question_embeddings = await asyncio.gather(*[
+        get_embedding(_expand_topic_acronyms(question_text)[:1200]) if question_text else asyncio.sleep(0, result=[])
+        for question_text in question_texts
+    ])
 
-    # Pre-embed course syllabus topics
-    topic_embeddings = []
-    for t in topics:
-        emb = await get_embedding(t["full"][:300])
-        topic_embeddings.append((t, emb))
-
-    for i, q in enumerate(questions):
-        q_text = (q.get("question_text") or q.get("text") or "").strip()
-        if not q_text:
-            final_mapping[i] = [fallback_topic]
+    results = {}
+    for index, question_text in enumerate(question_texts):
+        if not question_text:
+            results[index] = {
+                "status": "unmapped", "mappings": [], "suggestions": [],
+                "candidates": [], "mapper_version": mapper_version,
+                "reason": "Question text was empty after extraction.",
+            }
             continue
 
-        q_exp = _expand_topic_acronyms(q_text)
-        q_emb = await get_embedding(q_exp[:500])
-
         scored = []
-        for t, t_emb in topic_embeddings:
-            cos = _topic_cosine_similarity(q_emb, t_emb) if q_emb and t_emb else 0.0
-            kw = _topic_keyword_overlap(q_text, t["name"])
-            hybrid = 0.5 * cos + 0.5 * kw
-            scored.append((hybrid, t["id"]))
+        for topic_index, topic in enumerate(topics):
+            topic_embedding = topic_embeddings[topic_index]
+            question_embedding = question_embeddings[index]
+            semantic_score = (
+                _topic_cosine_similarity(question_embedding, topic_embedding)
+                if question_embedding and topic_embedding else 0.0
+            )
+            keyword_score = _topic_keyword_overlap(
+                question_text,
+                f"{topic['unit']} {topic['name']} {topic['description']}",
+            )
+            retrieval_score = 0.5 * semantic_score + 0.5 * keyword_score
+            scored.append({
+                "topic_id": topic["id"],
+                "topic_name": topic["name"],
+                "unit": topic["unit"],
+                "description": topic["description"],
+                "semantic_score": semantic_score,
+                "keyword_score": keyword_score,
+                "retrieval_score": retrieval_score,
+            })
+        scored.sort(key=lambda item: item["retrieval_score"], reverse=True)
+        if not scored:
+            results[index] = {
+                "status": "unmapped", "mappings": [], "suggestions": [],
+                "candidates": [], "mapper_version": mapper_version,
+                "reason": "No syllabus topics were available for this course.",
+            }
+            continue
 
-        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = [scored[0]]
+        if (
+            len(scored) > 1
+            and scored[1]["retrieval_score"] >= second_topic_threshold
+            and scored[1]["retrieval_score"] >= second_topic_ratio * scored[0]["retrieval_score"]
+        ):
+            selected.append(scored[1])
 
-        # Select top 1 or 2 highest-scoring topics
-        top_score, top_tid = scored[0]
-        selected_tids = [top_tid]
-        if len(scored) > 1 and scored[1][0] >= 0.65 and scored[1][0] >= top_score * 0.88:
-            selected_tids.append(scored[1][1])
+        mappings, suggestions = [], []
+        for candidate in selected:
+            result = {
+                **candidate,
+                "confidence": candidate["retrieval_score"],
+                "evidence": "Highest-ranked course-scoped semantic and keyword match.",
+                "mapping_method": "visionmodel_semantic_keyword_hybrid",
+                "mapper_version": mapper_version,
+            }
+            if candidate["retrieval_score"] >= confirmed_threshold:
+                mappings.append(result)
+            else:
+                suggestions.append(result)
 
-        final_mapping[i] = selected_tids
+        status = "mapped" if mappings else ("provisional" if suggestions else "unmapped")
+        results[index] = {
+            "status": status,
+            "mappings": mappings,
+            "suggestions": suggestions,
+            "candidates": scored[:8],
+            "mapper_version": mapper_version,
+            "reason": "" if mappings else "Top-ranked match retained as a suggestion below the 0.70 confirmation threshold.",
+        }
 
-    return final_mapping
+    mapped_count = sum(bool(item.get("mappings")) for item in results.values())
+    suggested_count = sum(bool(item.get("suggestions")) for item in results.values())
+    print(
+        f"[TopicMapper] VisionModel hybrid ranking finished for {course_code}: "
+        f"{mapped_count} confirmed, {suggested_count} with suggestions; no LLM calls made."
+    )
+    return results
 
 
 def classify_pdf_type(file_path: str) -> dict:

@@ -198,8 +198,17 @@ function createAIBubble(msgId) {
  */
 function renderProblemCards(data) {
   const { topic = 'Topic', problems = [] } = data;
+  const confirmedProblems = data.confirmed_problems || problems.filter(p =>
+    p.mapping_status === 'confirmed' || p.topic_link_type === 'TESTS_TOPIC'
+  );
+  const suggestedProblems = data.suggested_problems || problems.filter(p =>
+    p.mapping_status === 'suggested' || p.topic_link_type === 'SUGGESTED_TOPIC'
+  );
 
   if (!problems.length) {
+    if (data.scope_message) {
+      return `<div class="problem-list-empty"><p>${escapeHtml(data.scope_message)}</p></div>`;
+    }
     if (data.syllabus_guidance) {
       const sg = data.syllabus_guidance;
       const unitsHtml = (sg.units || []).map(u => `
@@ -234,7 +243,7 @@ function renderProblemCards(data) {
     return map[n] ? `BTL ${n} · ${map[n]}` : `BTL ${btl}`;
   };
 
-  const cards = problems.map((p, idx) => {
+  const renderCards = (items) => items.map((p, idx) => {
     const rawText = p.text || p.question_text || 'Question text unavailable';
     const qText   = escapeHtml(rawText);
     const marks   = p.marks   ? `<span class="pc-mark">${p.marks} marks</span>` : '';
@@ -267,7 +276,7 @@ function renderProblemCards(data) {
       <div class="problem-card">
         <div class="pc-header">
           <div style="display:flex;align-items:center;gap:8px;">
-            <span class="pc-num">Q${idx + 1}</span>
+            <span class="pc-num">Q${escapeHtml(p.question_number || idx + 1)}</span>
             ${topicTag}
           </div>
           <div class="pc-tags">${aiBadge}${course}${marks}${btl}</div>
@@ -283,14 +292,26 @@ function renderProblemCards(data) {
       </div>`;
   }).join('');
 
+  const confirmedCards = renderCards(confirmedProblems);
+  const suggestedCards = renderCards(suggestedProblems);
+
   return `
     <div class="problem-list-wrap">
       <div class="problem-list-header">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span>Problems on <strong>${escapeHtml(topic)}</strong></span>
-        <span class="pl-count">${problems.length} found</span>
+        <span class="pl-count">${confirmedProblems.length + suggestedProblems.length} found</span>
       </div>
-      <div class="problem-cards">${cards}</div>
+      ${confirmedProblems.length ? `
+        <section class="problem-group confirmed-problems">
+          <h3 style="margin:14px 0 8px;font-size:14px;color:#166534;">Confirmed topic links · TESTS_TOPIC (${confirmedProblems.length})</h3>
+          <div class="problem-cards">${confirmedCards}</div>
+        </section>` : ''}
+      ${suggestedProblems.length ? `
+        <section class="problem-group suggested-problems">
+          <h3 style="margin:18px 0 8px;font-size:14px;color:#9a6700;">Provisional topic suggestions · SUGGESTED_TOPIC (${suggestedProblems.length})</h3>
+          <div class="problem-cards">${suggestedCards}</div>
+        </section>` : ''}
     </div>`;
 }
 
@@ -353,6 +374,53 @@ function renderCurriculumResult(data) {
           </span>
         </div>
         <div class="curriculum-units-list">${unitsHtml}</div>
+      </div>
+    `;
+  }
+
+  if (matchType === 'course_outcomes') {
+    const course = (data.courses || [])[0];
+    if (!course) return '<div class="problem-list-empty"><p>No course outcomes were found for this course.</p></div>';
+    const outcomes = course.outcomes || [];
+    const rows = outcomes.map((outcome) => `
+      <li><strong>${escapeHtml(outcome.id || 'Outcome')}</strong> — ${escapeHtml(outcome.description || '')}</li>
+    `).join('');
+    return `
+      <div class="curriculum-result-wrap">
+        <div class="curriculum-hdr">
+          <div class="curriculum-title-wrap">
+            <span class="curr-code-badge">${escapeHtml(course.course_code || '')}</span>
+            <h3 class="curr-name">${escapeHtml(course.course_name || 'Course Outcomes')}</h3>
+          </div>
+          <span class="graph-fast-badge">Indexed Course Outcomes</span>
+        </div>
+        ${outcomes.length ? `<ol class="course-outcomes-list">${rows}</ol>` : '<p>No course outcomes are indexed for this course.</p>'}
+      </div>
+    `;
+  }
+
+  if (matchType === 'unsupported_aspect') {
+    return '<div class="problem-list-empty"><p>' +
+      escapeHtml(data.message || 'This curriculum detail is not indexed yet.') +
+      '</p></div>';
+  }
+
+  if (matchType === 'prerequisites') {
+    const course = (data.courses || [])[0];
+    if (!course) return '<div class="problem-list-empty"><p>No prerequisite information was found for this course.</p></div>';
+    const prerequisites = course.prerequisites || [];
+    const rows = prerequisites.map((item) => `
+      <li><strong>${escapeHtml(item.course_code || '')}</strong> — ${escapeHtml(item.course_name || '')}</li>
+    `).join('');
+    return `
+      <div class="curriculum-result-wrap">
+        <div class="curriculum-hdr">
+          <div class="curriculum-title-wrap">
+            <span class="curr-code-badge">${escapeHtml(course.course_code || '')}</span>
+            <h3 class="curr-name">Prerequisites — ${escapeHtml(course.course_name || '')}</h3>
+          </div>
+        </div>
+        ${prerequisites.length ? `<ul class="course-outcomes-list">${rows}</ul>` : '<p>No prerequisite links are indexed for this course.</p>'}
       </div>
     `;
   }
@@ -689,7 +757,7 @@ function renderCalendarResult(data) {
 
     eventsHtml = `
       <div class="cal-events-section">
-        <div class="cal-sec-title">Academic Milestones & Events</div>
+        <div class="cal-sec-title">${data.calendar_mode === 'month_events' ? 'Events' : 'Academic Milestones & Events'}</div>
         <div class="cal-events-list">${eventCards}</div>
       </div>`;
   }
@@ -717,7 +785,7 @@ function renderCalendarResult(data) {
       ${dayHtml || eventsHtml || overridesHtml ? `
       <div class="curriculum-hdr">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <h3 class="curr-name">Academic Calendar (AY 2026-2027)</h3>
+        <h3 class="curr-name">${data.calendar_mode === 'month_events' ? `Academic Events — ${escapeHtml(data.calendar_period || '')}` : 'Academic Calendar (AY 2026-2027)'}</h3>
         <span class="graph-fast-badge">Authoritative Calendar</span>
       </div>
       ${dayHtml}
@@ -1093,14 +1161,6 @@ document.getElementById('chat-input').addEventListener('input', function () {
   this.style.height = '';
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
-
-document.getElementById('chat-input').addEventListener('keydown', function (e) {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    e.stopPropagation();
-    sendMessage();
-  }
-}, { capture: true });
 
 let attachedImageB64 = null;
 

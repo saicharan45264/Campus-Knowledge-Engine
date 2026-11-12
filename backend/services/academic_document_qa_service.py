@@ -112,6 +112,52 @@ def _course_code(query: str) -> str | None:
     return m.group(0) if m else None
 
 
+def _semester_number(value: str | None) -> int | None:
+    normalized = (value or "").strip().upper()
+    if normalized.isdigit():
+        return int(normalized)
+    return SEMESTER_NUMBER.get(normalized)
+
+
+def _semester_storage_values(value: str) -> set[str]:
+    normalized = (value or "").strip().upper()
+    number = _semester_number(normalized)
+    values = {normalized} if normalized else set()
+    if number:
+        values.add(str(number))
+        values.update(roman for roman, roman_number in SEMESTER_NUMBER.items() if roman_number == number)
+    return values
+
+
+def _requested_semester_number(query: str) -> int | None:
+    q = query.lower()
+    match = re.search(r"\b(?:sem(?:ester)?\s*)([1-8])(?:st|nd|rd|th)?\b", q)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\b(?:sem(?:ester)?\s*)(i{1,3}|iv|v|vi|vii|viii)\b", q)
+    if match:
+        return SEMESTER_NUMBER[match.group(1).upper()]
+    return None
+
+
+def _requested_exam_type(query: str) -> str | None:
+    q = query.lower().replace("-", " ")
+    if re.search(r"\b(mid\s*term|mid\s*semester|midsem)\b", q):
+        return "mid_term"
+    if re.search(r"\b(end\s*sem(?:ester)?|endsem|final\s+exam)\b", q):
+        return "end_sem"
+    return None
+
+
+def _document_exam_type(filename: str, text: str) -> str | None:
+    source = f"{filename} {text}".lower().replace("-", " ").replace("_", " ")
+    if re.search(r"\b(mid\s*term|mid\s*semester|midsem)\b", source):
+        return "mid_term"
+    if re.search(r"\b(end\s*sem(?:ester)?|endsem|final\s+exam)\b", source):
+        return "end_sem"
+    return None
+
+
 def _semantic_rank(text: str, hits: list[dict[str, Any]]) -> int:
     """Return the best RRF rank containing a structured record, if available."""
     normalized = re.sub(r"\W+", "", text.lower())
@@ -135,6 +181,19 @@ async def answer_academic_document_query(
     if not department or not semester:
         return {"markdown_answer": "Your student profile needs a department and semester to look up these academic schedules."}
 
+    requested_semester = _requested_semester_number(question)
+    profile_semester = _semester_number(semester)
+    if requested_semester and profile_semester and requested_semester != profile_semester:
+        requested_roman = next((key for key, number in SEMESTER_NUMBER.items() if number == requested_semester), str(requested_semester))
+        profile_label = next((key for key, number in SEMESTER_NUMBER.items() if number == profile_semester), str(profile_semester))
+        return {
+            "markdown_answer": (
+                f"Your registered profile is **{department} Semester {profile_label}**, "
+                f"but this question asks about **Semester {requested_roman}**. "
+                "I can only retrieve schedule records that match your registered student profile."
+            )
+        }
+
     stmt = (
         select(
             AcademicDocumentRecord.id,
@@ -144,33 +203,41 @@ async def answer_academic_document_query(
             AcademicDocumentRecord.record_text,
             AcademicDocumentRecord.payload_json,
             Document.filename,
+            Document.id,
         )
         .join(Document, Document.id == AcademicDocumentRecord.document_id)
         .where(
             Document.doc_type == kind,
             Document.department == department,
-            Document.semester == semester,
+            Document.semester.in_(_semester_storage_values(semester)),
         )
         .order_by(AcademicDocumentRecord.page_number, AcademicDocumentRecord.line_number)
     )
     result = await db.execute(stmt)
     raw_rows = result.all()
-    if not raw_rows:
-        fallback_stmt = (
-            select(
-                AcademicDocumentRecord.id,
-                AcademicDocumentRecord.page_number,
-                AcademicDocumentRecord.line_number,
-                AcademicDocumentRecord.record_type,
-                AcademicDocumentRecord.record_text,
-                AcademicDocumentRecord.payload_json,
-                Document.filename,
-            )
-            .join(Document, Document.id == AcademicDocumentRecord.document_id)
-            .where(Document.doc_type == kind)
-            .order_by(AcademicDocumentRecord.page_number, AcademicDocumentRecord.line_number)
-        )
-        raw_rows = (await db.execute(fallback_stmt)).all()
+    requested_exam_type = _requested_exam_type(question) if kind == "exam_schedule" else None
+    if raw_rows and requested_exam_type:
+        text_by_document: dict[Any, list[str]] = {}
+        filenames: dict[Any, str] = {}
+        for row in raw_rows:
+            document_id = row[7]
+            text_by_document.setdefault(document_id, []).append(row[4] or "")
+            filenames[document_id] = row[6]
+        detected_types = {
+            doc_id: _document_exam_type(filename, "\n".join(text_by_document[doc_id]))
+            for doc_id, filename in filenames.items()
+        }
+        matching_ids = {doc_id for doc_id, doc_type in detected_types.items() if doc_type == requested_exam_type}
+        if not matching_ids:
+            requested_label = "Mid-Term" if requested_exam_type == "mid_term" else "End-Semester"
+            available_types = sorted({doc_type for doc_type in detected_types.values() if doc_type})
+            if available_types:
+                available_label = ", ".join("Mid-Term" if t == "mid_term" else "End-Semester" for t in available_types)
+                message = f"The indexed **{department} Semester {semester}** document is for **{available_label}** exams; it does not contain a matching {requested_label} schedule."
+            else:
+                message = f"I couldn't verify that the indexed **{department} Semester {semester}** exam document is a {requested_label} schedule, so I won't present it as one."
+            return {"markdown_answer": message}
+        raw_rows = [row for row in raw_rows if row[7] in matching_ids]
 
     if not raw_rows:
         label = {"lab_timetable": "lab timetable", "seating_arrangement": "seating arrangement", "exam_schedule": "exam schedule"}[kind]
@@ -185,6 +252,7 @@ async def answer_academic_document_query(
                 record_type=r[3],
                 record_text=r[4],
                 payload_json=r[5],
+                document_id=r[7],
             ),
             r[6],
         )

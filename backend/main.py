@@ -18,6 +18,7 @@ import uvicorn
 from collections import defaultdict
 from typing import Optional
 from intent_router import classify_query_intent
+from academic_tool_calling import route_tool_call, select_academic_tool
 
 # FastAPI is the core framework used to build our web API
 from fastapi import (
@@ -53,7 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # StaticFiles already imported above
 # Import our custom database configurations and models
 from database import Base, Document, DocumentChunk, ProcessingReport, StudentAccount, engine, get_db, get_neo4j
-from query_neo4j import fetch_all_problems_by_topic, fetch_problems_by_topic_graph
+from query_neo4j import fetch_problems_by_topic_graph, get_course_codes_for_topic
 from utils import (
     PREREQUISITE_MAP,
     add_prerequisite_edges,
@@ -561,6 +562,107 @@ def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
     """
     import re
     q_lower = question.lower()
+    structured_match = re.search(
+        r"\[Structured academic lookup:\s*(.*?)\]",
+        question,
+        flags=re.I | re.S,
+    )
+    structured_text = structured_match.group(1) if structured_match else ""
+    course_hint_match = re.search(r"\bcourse=(.*?)\s+aspect=", structured_text, re.I | re.S)
+    course_hint = course_hint_match.group(1).strip() if course_hint_match else ""
+    aspect_match = re.search(r"\baspect=([a-z_]+)", structured_text, re.I)
+    requested_aspect = aspect_match.group(1).lower() if aspect_match else ""
+    code_match = re.search(r"\b(?:19|20|22|23|24|25)[A-Z]{3,4}\d{3,4}\b", course_hint or question, re.I)
+    course_code = code_match.group(0).upper() if code_match else ""
+    unit_match = re.search(r"\bunit(?:_number)?[ =#-]*(\d+)\b", structured_text or q_lower, re.I)
+    requested_unit = int(unit_match.group(1)) if unit_match else 0
+
+    # Tool-selected curriculum aspects need course-aware graph queries. Keep
+    # the user's course identifier separate from routing words like "outcomes".
+    curriculum_aspect = requested_aspect
+    if not curriculum_aspect:
+        if re.search(r"\b(course outcomes?|learning outcomes?|cos)\b", q_lower):
+            curriculum_aspect = "course_outcomes"
+        elif re.search(r"\b(prerequisites?|pre requisites?)\b", q_lower):
+            curriculum_aspect = "prerequisites"
+        elif re.search(r"\b(blooms?|bloom taxonomy|taxonomy levels?)\b", q_lower):
+            curriculum_aspect = "blooms_taxonomy"
+        elif re.search(r"\b(credits?|ltpc)\b", q_lower):
+            curriculum_aspect = "credits_ltpc"
+        elif requested_unit or "unit_syllabus" in q_lower:
+            curriculum_aspect = "unit_syllabus"
+
+    course_name_hint = course_hint if not course_code else ""
+    if (course_code or course_name_hint) and curriculum_aspect == "blooms_taxonomy":
+        return {
+            "match_type": "unsupported_aspect",
+            "message": (
+                "Bloom taxonomy levels are not present in the indexed curriculum graph for this course. "
+                "The source syllabus needs Bloom-level annotations before this can be answered reliably."
+            ),
+        }
+    if (course_code or course_name_hint) and curriculum_aspect in {
+        "course_outcomes", "prerequisites", "unit_syllabus"
+    }:
+        with neo4j_driver.session() as session:
+            course_filter = """
+                MATCH (c:Course)
+                WHERE ($course_code <> '' AND toUpper(c.code) = toUpper($course_code))
+                   OR ($course_code = '' AND $course_name <> ''
+                       AND toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($course_name))
+            """
+            if curriculum_aspect == "course_outcomes":
+                rows = session.run(course_filter + """
+                    OPTIONAL MATCH (c)-[:HAS_OUTCOME]->(co:CourseOutcome)
+                    WITH c, collect(DISTINCT {
+                        id: co.id,
+                        description: co.description
+                    }) AS outcomes
+                    RETURN c.code AS course_code,
+                           coalesce(c.name, c.title, c.code) AS course_name,
+                           [o IN outcomes WHERE o.id IS NOT NULL AND o.description IS NOT NULL] AS outcomes
+                    ORDER BY course_code
+                    LIMIT 5
+                """, course_code=course_code, course_name=course_name_hint).data()
+                if rows:
+                    return {"match_type": "course_outcomes", "courses": rows}
+            elif curriculum_aspect == "prerequisites":
+                rows = session.run(course_filter + """
+                    OPTIONAL MATCH (c)-[:REQUIRES|REQUIRES_PREREQUISITE]->(p:Course)
+                    RETURN c.code AS course_code,
+                           coalesce(c.name, c.title, c.code) AS course_name,
+                           collect(DISTINCT {
+                               course_code: p.code,
+                               course_name: coalesce(p.name, p.title, p.code)
+                           }) AS prerequisites
+                    ORDER BY course_code
+                    LIMIT 5
+                """, course_code=course_code, course_name=course_name_hint).data()
+                rows = [
+                    {**row, "prerequisites": [p for p in row["prerequisites"] if p.get("course_code")]}
+                    for row in rows
+                ]
+                if rows:
+                    return {"match_type": "prerequisites", "courses": rows}
+            elif curriculum_aspect == "unit_syllabus":
+                rows = session.run(course_filter + """
+                    MATCH (c)-[:HAS_UNIT]->(u:Unit)
+                    WHERE $unit_number = 0 OR toInteger(u.number) = $unit_number
+                    OPTIONAL MATCH (u)-[:HAS_TOPIC]->(t:Topic)
+                    WITH c, u, t
+                    ORDER BY coalesce(t.order, toInteger(last(split(t.topic_id, '_t'))), 0) ASC
+                    WITH c, u.number AS unit_num,
+                         coalesce(u.title, 'Unit ' + toString(u.number)) AS unit_title,
+                         [x IN collect(DISTINCT t.name) WHERE x IS NOT NULL] AS topics
+                    RETURN c.code AS course_code,
+                           coalesce(c.name, c.title, c.code) AS course_name,
+                           toInteger(unit_num) AS unit_number,
+                           unit_title,
+                           topics
+                    ORDER BY unit_number
+                """, course_code=course_code, course_name=course_name_hint, unit_number=requested_unit).data()
+                if rows:
+                    return {"match_type": "exact", "records": rows}
 
     # 1. Check for Semester queries e.g. "what courses in 3rd semester", "sem 4 courses"
     sem_match = re.search(r'\b(?:sem(?:ester)?\s*(\d+)|(\d+)(?:st|nd|rd|th)?\s*sem(?:ester)?)\b', q_lower)
@@ -658,7 +760,7 @@ def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
                 return {"match_type": "elective_courses", "stream": stream_hint or "All Electives", "courses": eb_res}
 
     # 3. Check for specific Course Attribute queries (evaluation pattern, textbooks, references, course code, credits)
-    is_attr_query = any(k in q_lower for k in [
+    is_attr_query = curriculum_aspect == "credits_ltpc" or any(k in q_lower for k in [
         "evaluation pattern", "assessment pattern", "textbook", "textbooks", "reference", "references", "reference book", "course code", "credits"
     ])
 
@@ -671,6 +773,9 @@ def execute_graph_syllabus_query(neo4j_driver, question: str) -> dict:
     words = [w.strip(".,!?'\"") for w in q_lower.split()
              if len(w) > 1 and w.lower() not in STOP]
     phrase = " ".join(words).strip()
+    if course_hint:
+        phrase = course_code.lower() if course_code else course_hint.lower()
+        words = phrase.split()
 
     with neo4j_driver.session() as session:
         # Check course detail (evaluation, textbooks, code, credits)
@@ -871,6 +976,14 @@ def extract_topic_from_query(question: str) -> str:
     user_text = re.sub(r'^Image Content:.*', '', user_text, flags=re.DOTALL | re.IGNORECASE).strip()
     q_lower = user_text.lower()
 
+    structured_topic = re.search(
+        r"\[Structured academic lookup:\s*topic=(.*?)(?:\s+course=|\s+exam_type=|\s+marks=|\])",
+        user_text,
+        flags=re.I | re.S,
+    )
+    if structured_topic:
+        return structured_topic.group(1).strip(" \t\r\n?.,!")
+
     deictic_words = {
         "this", "that", "it", "these", "those", "here", "figure", "fig",
         "diagram", "circuit", "image", "pic", "picture", "schematic", "attachment"
@@ -1040,8 +1153,18 @@ async def chat_endpoint(
     context_parts = []
     search_query = question
 
-    # First, classify intent immediately using fast tier-1 / embedding router (<1ms)
-    intent = await classify_query_intent(question)
+    # Prefer model-selected academic tools for natural-language understanding.
+    # Tool arguments only steer existing application-owned retrieval services;
+    # they never become SQL or override the authenticated student profile.
+    tool_call = await select_academic_tool(question)
+    routed_tool = route_tool_call(question, tool_call) if tool_call else None
+    if routed_tool:
+        intent, search_query = routed_tool
+        print(f"[TOOL ROUTER] {tool_call['name']} -> {intent}: {tool_call.get('arguments', {})}")
+    else:
+        # Compatibility path for ordinary conversation or an endpoint/model
+        # which does not return a valid tool call.
+        intent = await classify_query_intent(question)
     print(f"[ROUTER] Intent classified as: {intent}")
 
     # Zero-LLM Fast-Path: Deterministic queries bypass LLM rewriting completely (<=50ms)
@@ -1093,33 +1216,47 @@ async def chat_endpoint(
             except Exception:
                 mark_filter = None
 
-        graph_problems = await fetch_problems_by_topic_graph(neo4j_driver, topic_name) if topic_name else []
-        keyword_problems = fetch_all_problems_by_topic(neo4j_driver, topic_name) if topic_name else []
-        print(f"[ROUTER] Graph RAG: {len(graph_problems)}, Keyword: {len(keyword_problems)} for '{topic_name}' (mark_filter={mark_filter})")
-        seen_texts, seen_ids, problems = set(), set(), []
-        for p in graph_problems + keyword_problems:
-            p_id = p.get("id")
+        topic_course_codes = get_course_codes_for_topic(neo4j_driver, topic_name, question)
+        # VisionModel-style topic lookup does not ask the student to disambiguate
+        # a topic shared by courses. An explicit course code still scopes results;
+        # otherwise search questions linked to that topic in each owning course.
+        linked_problems = await fetch_problems_by_topic_graph(
+            neo4j_driver, topic_name, topic_course_codes
+        ) if topic_name and topic_course_codes else []
+        print(
+            f"[ROUTER] Topic-link retrieval: {len(linked_problems)} results "
+            f"for '{topic_name}' scoped to {topic_course_codes or 'unresolved topic'} "
+            f"(mark_filter={mark_filter})"
+        )
+        confirmed_problems, suggested_problems = [], []
+        seen_by_status = {"TESTS_TOPIC": set(), "SUGGESTED_TOPIC": set()}
+        for p in linked_problems:
+            if topic_course_codes and str(p.get("course_code") or "").upper() not in topic_course_codes:
+                continue
+            link_type = str(p.get("topic_link_type") or "").upper()
+            if link_type not in seen_by_status:
+                continue
             norm = _re.sub(r'\s+', ' ', (p.get("text") or "").strip().lower())
-            if norm and norm not in seen_texts and p_id not in seen_ids:
-                seen_texts.add(norm)
-                if p_id: seen_ids.add(p_id)
-                if mark_filter is not None:
-                    p_marks = p.get("marks")
-                    try:
-                        if p_marks is not None and int(p_marks) != mark_filter:
-                            continue
-                    except Exception:
-                        pass
-                problems.append(p)
-
-        # Fallback to all problems for this topic if mark filter was too restrictive
-        if not problems and mark_filter is not None:
-            for p in graph_problems + keyword_problems:
-                p_id = p.get("id")
-                norm = _re.sub(r'\s+', ' ', (p.get("text") or "").strip().lower())
-                if norm and p_id not in seen_ids:
-                    seen_ids.add(p_id)
-                    problems.append(p)
+            p_id = str(p.get("id") or "")
+            dedupe_key = p_id or norm
+            if not dedupe_key or dedupe_key in seen_by_status[link_type]:
+                continue
+            if mark_filter is not None:
+                try:
+                    if p.get("marks") is not None and int(p["marks"]) != mark_filter:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            seen_by_status[link_type].add(dedupe_key)
+            if link_type == "TESTS_TOPIC":
+                p["mapping_status"] = "confirmed"
+                confirmed_problems.append(p)
+            else:
+                p["mapping_status"] = "suggested"
+                suggested_problems.append(p)
+        # Keep separate sections, with confirmed syllabus links before
+        # provisional suggestions. The frontend renders these arrays in order.
+        problems = confirmed_problems + suggested_problems
 
         # Prioritize questions with figures if an image was uploaded by student
         if payload.image_b64 and problems:
@@ -1167,6 +1304,8 @@ async def chat_endpoint(
                 "type": "problem_list",
                 "topic": topic_name or "Practice Problems",
                 "problems": problems,
+                "confirmed_problems": confirmed_problems,
+                "suggested_problems": suggested_problems,
                 "syllabus_guidance": syllabus_guidance,
             },
             headers={"X-Response-Type": "problem_list"},
@@ -1206,7 +1345,7 @@ async def chat_endpoint(
         match_type = syllabus_res.get("match_type")
 
         # Zero-LLM Fast-Path: structured Neo4j graph result returned immediately (<120ms)
-        if match_type in ("exact", "similar_list", "semester_courses", "elective_courses", "course_detail"):
+        if match_type in ("exact", "similar_list", "semester_courses", "elective_courses", "course_detail", "course_outcomes", "prerequisites", "unsupported_aspect"):
             return JSONResponse(
                 content={
                     "type": "curriculum_result",
@@ -1232,7 +1371,7 @@ async def chat_endpoint(
     elif intent == "ACADEMIC_DOCUMENT_LOOKUP":
         from services.academic_document_qa_service import answer_academic_document_query
         response_data = await answer_academic_document_query(
-            question=question,
+            question=search_query,
             db=db,
             department=department,
             semester=semester,
@@ -1255,7 +1394,7 @@ async def chat_endpoint(
         import re as _re
         from datetime import datetime as _dt
 
-        qa_res = await answer_calendar_query(question=question, db=db)
+        qa_res = await answer_calendar_query(question=search_query, db=db)
         calendar_mode = qa_res.get("calendar_mode")
         day_details = None
         events = qa_res.get("events", qa_res.get("holidays", []))
@@ -1264,7 +1403,7 @@ async def chat_endpoint(
         # For date/status questions, look up that day only. List and "next"
         # requests already return their bounded result from the calendar service.
         if not calendar_mode:
-            parsed_date = extract_date_from_text(question)
+            parsed_date = extract_date_from_text(search_query)
             if parsed_date:
                 try:
                     p_date = _dt.strptime(parsed_date, "%Y-%m-%d").date()
@@ -1299,6 +1438,7 @@ async def chat_endpoint(
             content={
                 "type": "calendar_result",
                 "calendar_mode": calendar_mode,
+                "calendar_period": qa_res.get("calendar_period"),
                 "query": question,
                 "markdown_answer": cal_md_ans,
                 "day_details": day_details,
@@ -1322,22 +1462,22 @@ async def chat_endpoint(
         # A registered account can only retrieve its own timetable cohort.
         # Legacy/demo sessions may still specify a cohort in the question.
         if student_profile is None:
-            sem_m = _re.search(r'sem(?:ester)?\s*([IVX]+|\d+)', question, _re.I)
+            sem_m = _re.search(r'sem(?:ester)?\s*([IVX]+|\d+)', search_query, _re.I)
             if sem_m:
                 sem_val = sem_m.group(1).upper()
                 sem_num_map = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI", "7": "VII", "8": "VIII"}
                 sem = sem_num_map.get(sem_val, sem_val)
 
-            sec_m = _re.search(r'sec(?:tion)?\s*([A-Za-z])\b', question, _re.I)
+            sec_m = _re.search(r'sec(?:tion)?\s*([A-Za-z])\b', search_query, _re.I)
             if sec_m:
                 sec = sec_m.group(1).upper()
 
-        target_date_str = extract_date_from_text(question)
-        weekday_match = _re.search(r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b', question, _re.I)
+        target_date_str = extract_date_from_text(search_query)
+        weekday_match = _re.search(r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b', search_query, _re.I)
         weekday = weekday_match.group(1).capitalize() if weekday_match else None
 
         qa_res = await answer_timetable_query(
-            question=question,
+            question=search_query,
             db=db,
             department=dept,
             semester=sem,
@@ -1367,7 +1507,7 @@ async def chat_endpoint(
 
     elif intent == "REGULATIONS_QUERY":
         from services.regulation_service import answer_regulations_query
-        reg_data = await answer_regulations_query(question, db)
+        reg_data = await answer_regulations_query(search_query, db)
         return JSONResponse(
             content={
                 "type": "regulation_result",
@@ -1736,12 +1876,30 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
                 if "error" in st or "fail" in st:
                     status_text = "error"
                     details = rep.get("error") or "Ingestion failed"
+                elif "partial" in st:
+                    status_text = "partial"
+                    extracted = rep.get("detected", 0) or rep.get("structured", 0) or rep.get("vision", 0)
+                    mapped = rep.get("mapped", 0)
+                    suggested = rep.get("suggested", 0)
+                    unmapped = rep.get("unmapped", 0)
+                    failed = rep.get("mapping_failed", 0)
+                    details = f"{extracted} detected; {mapped} mapped; {suggested} suggested; {unmapped} unassigned"
+                    if failed:
+                        details += f"; {failed} mapping writes failed"
+                    if rep.get("mapping_error"):
+                        details += f". Topic mapping: {rep['mapping_error']}"
                 elif "success" in st or "complete" in st:
                     status_text = "completed"
                     details = "Indexed successfully"
-                num_q = rep.get("structured", 0) or rep.get("vision", 0)
-                if num_q:
-                    details = f"{num_q} questions mapped"
+                num_q = rep.get("detected", 0) or rep.get("structured", 0) or rep.get("vision", 0)
+                if num_q and status_text == "completed":
+                    mapped = rep.get("mapped")
+                    if mapped is not None:
+                        suggested = rep.get("suggested", 0)
+                        unmapped = rep.get("unmapped", max(0, num_q - mapped - suggested))
+                        details = f"{num_q} detected; {mapped} mapped; {suggested} suggested; {unmapped} unassigned"
+                    else:
+                        details = f"{num_q} questions processed"
                 elif rep.get("records_indexed"):
                     count = rep["records_indexed"]
                     chunks = rep.get("chunks_indexed", 0)
@@ -2162,7 +2320,8 @@ async def process_pyq_background(
     file_path: str, course_code: str, document_id: uuid.UUID
 ):
     import json
-    report = {"type": "pyq", "course_code": course_code, "status": "started", "structured": 0, "vision": 0, "mapped": 0}
+    course_code = (course_code or "").strip().upper()
+    report = {"type": "pyq", "course_code": course_code, "status": "started", "detected": 0, "structured": 0, "vision": 0, "mapped": 0, "suggested": 0, "unmapped": 0, "mapping_failed": 0}
     print(f"[PYQ] Starting processing for {course_code}...")
     neo4j_driver = get_neo4j()
 
@@ -2173,14 +2332,41 @@ async def process_pyq_background(
         print(
             f"[PYQ] Text extractor found {len(structured_qs)} questions. Mapping to KG..."
         )
-        await map_pyq_structured_to_kg(neo4j_driver, structured_qs, str(document_id))
+        report["structured"] = len(structured_qs)
+        report["detected"] = len(structured_qs)
+        mapping_stats = {"mapped": 0, "suggested": 0, "unmapped": 0, "total": len(structured_qs)}
+        mapping_error = None
+        try:
+            mapping_stats = await map_pyq_structured_to_kg(
+                neo4j_driver,
+                structured_qs,
+                course_code=course_code,
+                document_id=str(document_id),
+            )
+            mapping_error = mapping_stats.get("mapping_error")
+        except Exception as exc:
+            # Preserve extracted PYQ text for semantic search even if the
+            # admin-selected course has no curriculum topics to map against.
+            mapping_error = str(exc)
+            mapping_stats = {
+                "mapped": 0,
+                "unmapped": 0,
+                "mapping_failed": len(structured_qs),
+                "total": len(structured_qs),
+            }
+            print(f"[PYQ] Topic mapping failed for {course_code}: {exc}")
 
         async for db in get_db():
             for q in structured_qs:
-                labeled_content = f"[PYQ - {course_code} - {q['question_number']}]\n{q['question_text']}"
+                part_label = f"({q['subpart_label']})" if q.get("subpart_label") else ""
+                page_label = f"Page {q['page_number']}" if q.get("page_number") else ""
+                labeled_content = (
+                    f"[PYQ - {course_code} - Q{q['question_number']}{part_label}"
+                    f"{f' - {page_label}' if page_label else ''}]\n{q['question_text']}"
+                )
                 img_url = q.get("image_url")
                 if img_url:
-                    labeled_content += f"\n\n![Diagram for Q{q['question_number']}]({img_url})"
+                    labeled_content += f"\n\n![Diagram for Q{q['question_number']}{part_label}]({img_url})"
                 embedding = await get_embedding(labeled_content)
                 if embedding:
                     text_chunk = DocumentChunk(
@@ -2194,8 +2380,14 @@ async def process_pyq_background(
             await db.commit()
             break
         print(f"[PYQ] Finished processing structured text for {course_code}!")
-        report["status"] = "success_structured"
-        report["structured"] = len(structured_qs)
+        has_unassigned = bool(mapping_error or mapping_stats.get("unmapped") or mapping_stats.get("mapping_failed"))
+        report["status"] = "partial_success" if has_unassigned else "success_structured"
+        if mapping_error:
+            report["mapping_error"] = mapping_error
+        report["mapped"] = mapping_stats.get("mapped", 0)
+        report["suggested"] = mapping_stats.get("suggested", 0)
+        report["unmapped"] = mapping_stats.get("unmapped", 0)
+        report["mapping_failed"] = mapping_stats.get("mapping_failed", 0)
         async for db in get_db():
             db.add(ProcessingReport(document_id=document_id, course_code=course_code, report_json=json.dumps(report)))
             await db.commit()
@@ -2229,9 +2421,34 @@ async def process_pyq_background(
                 image_url = upload_question_image_to_cloudinary(image_bytes, public_id)
 
                 # Map extracted questions into the KG
-                await map_questions_to_kg(
-                    neo4j_driver, course_code, questions, document_id, image_url
-                )
+                try:
+                    vision_mapping_stats = await map_questions_to_kg(
+                        neo4j_driver,
+                        course_code,
+                        questions,
+                        document_id,
+                        image_url,
+                        page_number=page_num_lbl,
+                        chunk_index=chunk_index,
+                    )
+                except Exception as mapping_exc:
+                    vision_mapping_stats = {
+                        "mapped": 0,
+                        "suggested": 0,
+                        "unmapped": 0,
+                        "mapping_failed": len(questions),
+                        "total": len(questions),
+                        "mapping_error": str(mapping_exc),
+                    }
+                    print(f"[PYQ Vision] Topic mapping failed for {course_code}: {mapping_exc}")
+                report["vision"] += vision_mapping_stats.get("total", len(questions))
+                report["detected"] += vision_mapping_stats.get("total", len(questions))
+                report["mapped"] += vision_mapping_stats.get("mapped", 0)
+                report["suggested"] = report.get("suggested", 0) + vision_mapping_stats.get("suggested", 0)
+                report["unmapped"] = report.get("unmapped", 0) + vision_mapping_stats.get("unmapped", 0)
+                report["mapping_failed"] = report.get("mapping_failed", 0) + vision_mapping_stats.get("mapping_failed", 0)
+                if vision_mapping_stats.get("mapping_error"):
+                    report["mapping_error"] = vision_mapping_stats["mapping_error"]
 
                 for q in questions:
                     if isinstance(q, str):
@@ -2286,7 +2503,10 @@ async def process_pyq_background(
         break
 
     print(f"[PYQ] Finished processing all content for {course_code}!")
-    report["status"] = "success_vision"
+    if report.get("detected", 0) == 0:
+        report["mapping_error"] = "No questions were extracted from this PDF. Check the scan quality or OCR extraction before relying on topic mappings."
+    has_unassigned = bool(report.get("mapping_error") or report.get("unmapped") or report.get("mapping_failed"))
+    report["status"] = "partial_success" if has_unassigned else "success_vision"
     async for db in get_db():
         db.add(ProcessingReport(document_id=document_id, course_code=course_code, report_json=json.dumps(report)))
         await db.commit()

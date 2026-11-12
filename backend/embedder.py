@@ -35,7 +35,9 @@ class LRUCache:
 
 
 embedding_cache = LRUCache(capacity=2000)
-_embed_semaphore = asyncio.Semaphore(1)
+# Small bounded concurrency speeds question/topic embedding batches while
+# keeping pressure on the remote Ollama endpoint predictable.
+_embed_semaphore = asyncio.Semaphore(max(1, min(int(os.getenv("EMBED_CONCURRENCY", "2")), 4)))
 
 
 async def embed_text(text: str, max_retries: int = 5) -> List[float]:
@@ -85,8 +87,8 @@ async def embed_text(text: str, max_retries: int = 5) -> List[float]:
 
 
 async def embed_batch(texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts sequentially using the cache."""
-    return [await embed_text(t) for t in texts]
+    """Embed a batch concurrently, bounded by the remote-call semaphore."""
+    return await asyncio.gather(*(embed_text(text) for text in texts))
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:

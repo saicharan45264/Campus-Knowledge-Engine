@@ -1,9 +1,56 @@
 import json
+import re
 from embedder import embed_text, cosine_similarity
 
-async def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
+def get_course_codes_for_topic(neo4j_driver, topic: str, original_query: str = "") -> list[str]:
+    """Resolve a PYQ topic to its owning syllabus course(s)."""
+    explicit_codes = list(dict.fromkeys(
+        code.upper() for code in re.findall(r"\b\d{2}[A-Z]{2,4}\d{3,4}\b", (original_query or "").upper())
+    ))
+    with neo4j_driver.session() as session:
+        if explicit_codes:
+            existing = session.run(
+                "MATCH (c:Course) WHERE toUpper(c.code) IN $codes "
+                "RETURN DISTINCT toUpper(c.code) AS course_code",
+                codes=explicit_codes,
+            ).data()
+            return [row["course_code"] for row in existing if row.get("course_code")] or explicit_codes
+
+        if not topic or not topic.strip():
+            return []
+
+        matched_topics = session.run(
+            """
+            MATCH (c:Course)-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic)
+            WHERE toLower(t.name) = toLower($topic)
+               OR toLower(t.name) CONTAINS toLower($topic)
+               OR (size($topic) > 3 AND toLower($topic) CONTAINS toLower(t.name))
+            RETURN DISTINCT toUpper(c.code) AS course_code
+            """,
+            topic=topic.strip(),
+        ).data()
+        codes = [row["course_code"] for row in matched_topics if row.get("course_code")]
+        if codes:
+            return codes
+
+        matched_courses = session.run(
+            """
+            MATCH (c:Course)
+            WHERE toLower(coalesce(c.name, c.title, '')) CONTAINS toLower($topic)
+               OR (size($topic) > 3 AND toLower($topic) CONTAINS toLower(coalesce(c.name, c.title, '')))
+            RETURN DISTINCT toUpper(c.code) AS course_code
+            """,
+            topic=topic.strip(),
+        ).data()
+        return [row["course_code"] for row in matched_courses if row.get("course_code")]
+
+
+async def fetch_problems_by_topic_graph(
+    neo4j_driver, topic: str, course_codes: list[str] | None = None
+) -> list[dict]:
     """
-    PRIMARY Graph RAG retrieval: Traverses (q:Question)-[:TESTS|TESTS_TOPIC]->(t:Topic).
+    Return only questions explicitly linked to the matching syllabus topic.
+    Confirmed and provisional edges are preserved as separate result rows.
     Matches topic name via direct substring and Lucene fulltext index on Topic(name).
     """
     if not topic or not topic.strip():
@@ -15,18 +62,22 @@ async def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
         # 1. Direct name match traversal
         result = session.run(
             """
-            MATCH (t:Topic)
+            MATCH (c:Course)-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic)
             WHERE toLower(t.name) CONTAINS toLower($topic)
                OR (size($topic) > 3 AND toLower($topic) CONTAINS toLower(t.name))
-            MATCH (q:Question)-[r:TESTS|TESTS_TOPIC]->(t)
+            MATCH (q:Question)-[r:TESTS_TOPIC|SUGGESTED_TOPIC]->(t)
+            WHERE coalesce(q.course_code, c.code) = c.code
+              AND (size($course_codes) = 0 OR toUpper(c.code) IN $course_codes)
             RETURN DISTINCT q.id AS id, q.question_number AS question_number,
                    q.text AS text, q.marks AS marks, q.btl AS btl,
                    q.has_figure AS has_figure,
-                   q.image_url AS image_url, q.course_code AS course_code,
-                   t.name AS topic_name
-            ORDER BY (CASE WHEN q.has_figure THEN 1 ELSE 0 END) DESC, toInteger(question_number) ASC
+                   q.image_url AS image_url, c.code AS course_code,
+                   t.name AS topic_name, type(r) AS topic_link_type,
+                   r.confidence AS mapping_score, r.mapping_status AS mapping_status
+            ORDER BY CASE WHEN topic_link_type = 'TESTS_TOPIC' THEN 0 ELSE 1 END,
+                     has_figure DESC, question_number ASC
             """,
-            topic=topic.strip(),
+            topic=topic.strip(), course_codes=[c.upper() for c in (course_codes or [])],
         )
         data = result.data()
         if data:
@@ -40,16 +91,22 @@ async def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
                     CALL db.index.fulltext.queryNodes('topic_name_ft', $clean_topic)
                     YIELD node AS t, score
                     WHERE score > 1.2
-                    MATCH (q:Question)-[r:TESTS|TESTS_TOPIC]->(t)
+                    MATCH (c:Course)-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t)
+                    MATCH (q:Question)-[r:TESTS_TOPIC|SUGGESTED_TOPIC]->(t)
+                    WHERE coalesce(q.course_code, c.code) = c.code
+                      AND (size($course_codes) = 0 OR toUpper(c.code) IN $course_codes)
                     RETURN DISTINCT q.id AS id, q.question_number AS question_number,
                            q.text AS text, q.marks AS marks, q.btl AS btl,
                            q.has_figure AS has_figure,
-                           q.image_url AS image_url, q.course_code AS course_code,
-                           t.name AS topic_name, score
-                    ORDER BY (CASE WHEN q.has_figure THEN 1 ELSE 0 END) DESC, score DESC
+                           q.image_url AS image_url, c.code AS course_code,
+                           t.name AS topic_name, type(r) AS topic_link_type,
+                           r.confidence AS mapping_score, r.mapping_status AS mapping_status, score
+                    ORDER BY CASE WHEN topic_link_type = 'TESTS_TOPIC' THEN 0 ELSE 1 END,
+                             has_figure DESC, score DESC
                     LIMIT 20
                     """,
                     clean_topic=clean_topic,
+                    course_codes=[c.upper() for c in (course_codes or [])],
                 )
                 ft_data = ft_result.data()
                 if ft_data:
@@ -61,7 +118,9 @@ async def fetch_problems_by_topic_graph(neo4j_driver, topic: str) -> list[dict]:
 
 
 
-def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
+def fetch_all_problems_by_topic(
+    neo4j_driver, topic: str, course_codes: list[str] | None = None
+) -> list[dict]:
     """
     Executes a Cypher query to retrieve all Question nodes associated with a specific Topic or keyword.
     Returns complete metadata (marks, btl, has_figure, image_url, course_code).
@@ -334,7 +393,8 @@ def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
                        WHEN size($topic) > 3 AND toLower($topic) CONTAINS toLower(code) THEN 8
                        WHEN size($topic) > 3 AND toLower(tname) CONTAINS toLower($topic) THEN 6
                        ELSE 0 END) AS code_score
-            WHERE match_count > 0 OR code_score > 0 OR qtext CONTAINS toLower($topic)
+            WHERE (match_count > 0 OR code_score > 0 OR qtext CONTAINS toLower($topic))
+              AND (size($course_codes) = 0 OR toUpper(code) IN $course_codes)
             RETURN DISTINCT q.id AS id, 
                    q.question_number AS question_number, 
                    q.text AS text, 
@@ -348,6 +408,7 @@ def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
         """,
             word_groups=word_groups,
             topic=topic,
+            course_codes=[c.upper() for c in (course_codes or [])],
         )
         data = result.data()
         if not data and topic:
@@ -362,6 +423,7 @@ def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
                         OPTIONAL MATCH (q)-[:BELONGS_TO]->(c:Course)
                         OPTIONAL MATCH (c_t:Course)-[:TESTED_BY]->(q)
                         WITH q, coalesce(c.code, c_t.code, q.course_code, '') AS code, score
+                        WHERE size($course_codes) = 0 OR toUpper(code) IN $course_codes
                         RETURN DISTINCT q.id AS id, 
                                q.question_number AS question_number, 
                                q.text AS text, 
@@ -373,7 +435,8 @@ def fetch_all_problems_by_topic(neo4j_driver, topic: str) -> list[dict]:
                                score
                         ORDER BY (CASE WHEN q.has_figure THEN 1 ELSE 0 END) DESC, score DESC
                         LIMIT 15
-                    """, ft_query=clean_ft).data()
+                    """, ft_query=clean_ft,
+                         course_codes=[c.upper() for c in (course_codes or [])]).data()
                     if ft_res:
                         return ft_res
                 except Exception as _fte:

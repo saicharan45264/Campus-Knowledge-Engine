@@ -650,6 +650,53 @@ def _parse_copo_table(tables: list) -> list:
     return mappings
 
 
+def _split_unit_topics(unit_body: str) -> list[str]:
+    """Split syllabus topic lists without breaking examples or hyphenated terms."""
+    text = re.sub(r"\s+", " ", unit_body.replace("\n", " ")).strip()
+    parts, buffer = [], []
+    paren_depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(0, paren_depth - 1)
+
+        # Commas and semicolons delimit top-level topics. Commas inside
+        # parentheses are examples/details and stay attached to their topic.
+        is_separator = paren_depth == 0 and char in ",;"
+        # A period separates syllabus sentences, but not abbreviations/decimals.
+        is_sentence_end = (
+            paren_depth == 0
+            and char == "."
+            and index + 1 < len(text)
+            and text[index + 1].isspace()
+            and index > 0
+            and (text[index - 1].isalnum() or text[index - 1] == ")")
+        )
+        if is_separator or is_sentence_end:
+            part = "".join(buffer).strip(" .;,-–—")
+            if part:
+                parts.append(part)
+            buffer = []
+        else:
+            buffer.append(char)
+
+    final_part = "".join(buffer).strip(" .;,-–—")
+    if final_part:
+        parts.append(final_part)
+
+    cleaned = []
+    for part in parts:
+        # Coordinating conjunctions at list boundaries are not part of a label.
+        part = re.sub(r"^(?:and|or)\s+", "", part, flags=re.IGNORECASE).strip()
+        part = re.sub(r"\s+", " ", part)
+        part = re.sub(r"(?i)\bmulticycle at a path\b", "multicycle datapath", part)
+        if 4 <= len(part) < 200 and not _is_junk_topic(part):
+            if part.lower() not in {"introduction", "overview", "summary", "conclusion", "and", "the", "of", "in"}:
+                cleaned.append(part)
+    return cleaned
+
+
 def _parse_units(body: str) -> list:
     units = []
     stop_match = _STOP_SECTION_RE.search(body)
@@ -663,39 +710,17 @@ def _parse_units(body: str) -> list:
     for idx, u_match in enumerate(unit_matches):
         unit_num = _roman_to_int(u_match.group(1))
         u_start = u_match.end()
-        u_end = (
-            unit_matches[idx + 1].start() if idx + 1 < len(unit_matches) else safe_end
-        )
-
+        u_end = unit_matches[idx + 1].start() if idx + 1 < len(unit_matches) else safe_end
         unit_body = body_trimmed[u_start:u_end]
         inner_stop = _STOP_SECTION_RE.search(unit_body)
         if inner_stop:
             unit_body = unit_body[: inner_stop.start()]
 
-        raw_topics = re.split(r"[,;\-–]", unit_body)
-        topics = []
-        for rt in raw_topics:
-            t = re.sub(r"\s+", " ", rt.strip().replace("\n", " "))
-            if len(t) > 3 and len(t) < 200 and not _is_junk_topic(t):
-                if t.lower() not in {
-                    "introduction",
-                    "overview",
-                    "summary",
-                    "conclusion",
-                    "and",
-                    "the",
-                    "of",
-                    "in",
-                }:
-                    topics.append(t)
-
+        topics = _split_unit_topics(unit_body)
         if topics:
-            units.append(
-                {"number": unit_num, "title": f"Unit {unit_num}", "topics": topics}
-            )
+            units.append({"number": unit_num, "title": f"Unit {unit_num}", "topics": topics})
 
     return units
-
 
 def _parse_evaluation_pattern(body: str, tables: list) -> dict | None:
     pattern = {"ratio": None, "internal": [], "external": []}

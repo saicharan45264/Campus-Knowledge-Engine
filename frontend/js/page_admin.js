@@ -257,6 +257,10 @@ function renderIndexedDocuments() {
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
         ${escapeHtml(doc.details || 'Completed')}
       </span>`;
+    } else if (doc.status === 'partial') {
+      statusBadge = `<span title="${escapeHtml(doc.details || 'Partially indexed')}" style="color:#b45309;background:#fef3c7;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:4px;">
+        ${escapeHtml(doc.details || 'Partially indexed')}
+      </span>`;
     } else if (doc.status === 'error') {
       statusBadge = `<span title="${escapeHtml(doc.details || 'Ingestion failed')}" style="color:#b91c1c;background:#fee2e2;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;">${escapeHtml(doc.details || 'Failed')}</span>`;
     } else {
@@ -308,6 +312,7 @@ export async function fetchDocuments() {
   }
 }
 window.fetchDocuments = fetchDocuments;
+
 window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('document-department-filter')?.addEventListener('change', renderIndexedDocuments);
 });

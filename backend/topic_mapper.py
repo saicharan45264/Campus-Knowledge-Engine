@@ -1,21 +1,9 @@
-"""
-topic_mapper.py — Semantic + keyword Question → Topic mapping.
+"""Legacy topic-mapping implementation, retained for old scripts/tests.
 
-Creates (:Question)-[:TESTS_TOPIC { confidence, semantic_score,
-keyword_score, mapping_method, review_status, mapped_at }]->(:Topic)
-
-Thresholds (from .env):
-  TOPIC_MAP_AUTO_APPROVE_THRESHOLD  = 0.80  (primary mapping: >= 0.80 → approved)
-  TOPIC_MAP_SECONDARY_MIN_THRESHOLD = 0.70  (secondary: >= 0.70 allowed)
-  TOPIC_MAP_SECONDARY_MAX_GAP       = 0.15  (secondary: must be within 0.15 of primary)
-  TOPIC_MAP_MAX_TOPICS               = 2    (at most 2 mappings per question)
-
-Only Topics belonging to the same canonical course_code as the Question are
-considered. Topics with approved=False (LLM-derived, pending admin review)
-are excluded from automatic mapping.
-
-Topic embeddings are cached on the Topic node as t.embedding (JSON string)
-to avoid re-generating them on every mapping run.
+The active PYQ upload path is ``main.py`` →
+``utils.map_pyq_structured_to_kg`` →
+``utils.semantic_map_questions_to_topics``. This module is not used for current
+uploads; keep its older behavior from being mistaken for the active policy.
 """
 
 import os

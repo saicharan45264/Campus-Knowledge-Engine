@@ -197,7 +197,9 @@ class IntentRouter:
             "syllabus", "evaluation pattern", "assessment pattern",
             "textbook", "textbooks", "courses do i have in semester", "semester courses",
             "electives in", "elective subjects in", "elective basket",
-            "what all courses in sem", "credits for course", "contact hours"
+            "what all courses in sem", "credits for course", "contact hours",
+            "topics in unit", "topics of unit", "topic in unit", "content of unit",
+            "covered in unit", "unit syllabus"
         ]):
             return "SIMPLE_CURRICULUM"
 

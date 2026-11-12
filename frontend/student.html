@@ -80,7 +80,8 @@
           </button>
         </div>
         <div class="input-wrap">
-          <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, PYQs, or any topic…"></textarea>
+          <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, PYQs, or any topic…"
+            onkeydown="if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); if (typeof window.sendMessage === 'function') window.sendMessage(); }"></textarea>
           <div class="input-btns">
             <label class="btn-attach" title="Attach image">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -105,6 +106,6 @@
   <img id="lightbox-img" src="" alt="Full Screen Image" />
 </div>
 
-<script type="module" src="js/page_student.js?v=10"></script>
+<script type="module" src="js/page_student.js?v=12"></script>
 </body>
 </html>
