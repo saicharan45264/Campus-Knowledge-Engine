@@ -1,27 +1,52 @@
-# ── Python ──
-backend/venv/
+# ==============================================================================
+# M.A.C.H. AI — Docker Build Context Exclusions
+# ==============================================================================
+
+# ── Python Virtual Environments & Caches ──
 venv/
 .venv/
+env/
+backend/venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
-backend/cache/
+.pytest_cache/
 .ruff_cache/
+backend/cache/
 
-# ── Data ──
+# ── Version Control & Tooling ──
+.git/
+.gitignore
+.github/
+
+# ── Local Secrets & Environment ──
+# Injected at runtime via docker-compose env_file, not baked into the image
+.env
+.env.local
+*.pem
+*.key
+
+# ── Uploads, PDFs & Test Documents ──
 uploads/
 backend/uploads/
+docs/model input docs/
+docs/test_docs/
 *.pdf
 *.pptx
+*.dump
 
-# ── Environment ──
-.env
+# ── Benchmark Run Data ──
+scripts/benchmark_results.json
+*.log
 
-# ── Git & OS ──
-.git/
-.DS_Store
-
-# ── Docker ──
+# ── Docker Configuration Files ──
 docker-compose.yml
 docker-compose.override.yml
 Dockerfile
+.dockerignore
+
+# ── IDEs, Editors & OS Files ──
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db

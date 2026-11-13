@@ -1,18 +1,27 @@
 <!--
-  ~ 🎓 Admin Dashboard - MACH AI (M.A.C.H. - Multimodel Academic Cognitive Hub)
-  ~ Secured management interface for curriculum vectors and analytics.
-  ~ Built with a focus on data visualization and secure API interactions.
+  ~ M.A.C.H. AI — Admin Portal
+  ~ Amrita Vishwa Vidyapeetham · Coimbatore
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Dashboard — MACH AI</title>
+<title>Admin Portal — MACH AI</title>
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png?v=11">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png?v=11">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=11">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png?v=11">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css?v=2">
-<link rel="stylesheet" href="css/page_admin.css?v=2">
+<link rel="stylesheet" href="css/variables.css?v=5">
+<link rel="stylesheet" href="css/base.css?v=5">
+<link rel="stylesheet" href="css/components.css?v=5">
+<link rel="stylesheet" href="css/layout.css?v=5">
+<link rel="stylesheet" href="css/page_admin.css?v=5">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <link rel="manifest" href="./manifest.json">
 <script>
@@ -27,8 +36,11 @@
   <!-- Sidebar -->
   <aside class="admin-sidebar">
     <div class="admin-sb-top">
-      <div class="admin-logo">M.A.C.H.</div>
-      <div class="admin-badge">Admin Panel</div>
+      <a href="admin.html" class="brand-refresh-link" onclick="window.refreshPage && window.refreshPage(event)" title="Refresh page" style="margin-bottom:8px;">
+        <img src="icons/icon-192.png" alt="MACH AI" class="brand-icon-img">
+        <div class="admin-logo" style="margin-bottom:0;">M.A.C.H.</div>
+      </a>
+      <div class="admin-badge">Admin Portal</div>
     </div>
     <nav class="admin-nav">
       <div class="admin-nav-section-label">Workspace</div>
@@ -37,11 +49,11 @@
         <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></span>
       </button>
       <button class="a-nav-item" onclick="window.adminNav(this,'upload')">
-        <span class="nl">Document Upload</span>
+        <span class="nl">Upload Documents</span>
         <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
       </button>
       <button class="a-nav-item" onclick="window.adminNav(this,'eval')">
-        <span class="nl">Evaluation</span>
+        <span class="nl">Quality Check</span>
         <span class="ni"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
       </button>
       <div class="admin-nav-section-label" style="margin-top:10px;">System</div>
@@ -52,7 +64,9 @@
     </nav>
     <div class="admin-sb-footer">
       <div class="admin-user-row">
-        <div class="avatar">AD</div>
+        <div class="avatar" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+        </div>
         <div>
           <div class="aun" id="admin-name">Admin</div>
           <div class="aut">Course Administrator</div>
@@ -68,40 +82,38 @@
   <!-- Main Content -->
   <main class="admin-main">
     <div class="admin-page-header">
-      <h2>Admin Dashboard</h2>
-      <p>Manage curriculum documents and evaluate RAG pipeline performance.</p>
+      <h2>Admin Portal</h2>
+      <p>Manage curriculum documents, question papers, and answer quality.</p>
     </div>
 
-    <!-- Sections -->
+    <!-- Overview Section -->
     <div id="section-overview">
-      <!-- Stats Row -->
       <div class="admin-stats-row">
         <div class="admin-stat-card">
           <div class="asc-val" id="stat-docs">—</div>
-          <div class="asc-label">Documents indexed</div>
+          <div class="asc-label">Documents uploaded</div>
         </div>
         <div class="admin-stat-card">
           <div class="asc-val" id="stat-mean">—</div>
-          <div class="asc-label">Mean RAGAS score</div>
+          <div class="asc-label">Overall accuracy</div>
         </div>
         <div class="admin-stat-card">
-          <div class="asc-val">v1.0</div>
-          <div class="asc-label">Pipeline version</div>
+          <div class="asc-val">Active</div>
+          <div class="asc-label">System status</div>
         </div>
       </div>
 
-      <!-- Documents List -->
       <div class="panel">
         <div class="panel-head">
           <div class="panel-head-left">
-            <h3>Indexed Documents</h3>
-            <p>All documents currently in the knowledge base</p>
+            <h3>Uploaded Documents</h3>
+            <p>All curriculum handbooks and past question papers available in the course library</p>
           </div>
-          <span class="panel-tag">Library</span>
+          <span class="panel-tag">Course Library</span>
         </div>
         <div class="docs-table-wrap">
           <table class="docs-table">
-            <thead><tr><th>Course / Dept</th><th>Type</th><th>Filename</th><th>Extraction Status</th><th>Uploaded</th><th></th></tr></thead>
+            <thead><tr><th>Course / Program</th><th>Type</th><th>Filename</th><th>Status</th><th>Uploaded</th><th></th></tr></thead>
             <tbody id="documents-table-body">
               <tr><td colspan="6" style="text-align:center;color:var(--text-4);padding:20px;">Loading…</td></tr>
             </tbody>
@@ -110,35 +122,34 @@
       </div>
     </div>
 
+    <!-- Upload Section -->
     <div id="section-upload" style="display: none;">
-      <!-- Upload Panel -->
       <div class="panel">
         <div class="panel-head">
           <div class="panel-head-left">
-            <h3>Smart Bulk Document Ingestion</h3>
-            <p>Upload any Syllabus PDF or Past Year Question papers (Single or Bulk batch). Auto-extracts course codes, diagrams, and maps to the Neo4j Knowledge Graph.</p>
+            <h3>Upload Course Documents</h3>
+            <p>Upload official curriculum PDFs or past year question papers (single or multiple files) to update your course library.</p>
           </div>
-          <span class="panel-tag">Auto-Graph Ingest</span>
+          <span class="panel-tag">PDF Upload</span>
         </div>
 
         <div class="field-row">
           <div class="field" style="flex:1;">
-            <label>Ingestion Mode</label>
+            <label>Document Type</label>
             <select id="doc-type" onchange="window.docTypeChanged()">
-              <option value="auto" selected>✨ Auto-Detect (Syllabus or PYQs)</option>
-              <option value="pyq">Past Year Questions (PYQ)</option>
-              <option value="syllabus">Curriculum &amp; Syllabus</option>
+              <option value="syllabus" selected>Curriculum &amp; Syllabus</option>
+              <option value="pyq">Past Year Question Paper (PYQ)</option>
             </select>
           </div>
           <div class="field" id="course-code-field" style="display: none; flex:1;">
             <label>Course Code (Optional Override)</label>
             <input type="text" id="course-code" placeholder="e.g. 23EEE104">
           </div>
-          <div class="field" id="dept-field" style="display: none; flex:1;">
-            <label>Department (Optional Override)</label>
+          <div class="field" id="dept-field" style="display: block; flex:1;">
+            <label>Program / Department (Optional Override)</label>
             <input type="text" id="dept" placeholder="e.g. CSE">
           </div>
-          <div class="field" id="year-field" style="display: none; flex:1;">
+          <div class="field" id="year-field" style="display: block; flex:1;">
             <label>Year (Optional Override)</label>
             <input type="text" id="year" placeholder="e.g. 2023">
           </div>
@@ -149,18 +160,18 @@
           <input type="file" accept=".pdf" id="file-input" multiple onchange="window.fileSelected(this)">
           <div class="dz-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
           <div class="dz-text">Drop PDF files here or <u>browse</u></div>
-          <div class="dz-hint">Bulk upload supported · Auto-classifies Syllabus &amp; PYQs · Diagrams &amp; circuits auto-extracted</div>
+          <div class="dz-hint">Multiple PDF files supported · Extracts syllabus units, topics, and question diagrams</div>
           <div class="dz-filename" id="dz-filename"></div>
         </div>
 
         <div id="file-queue-preview" style="margin-top:14px; display:none;">
-          <div style="font-size:12.5px; font-weight:600; color:var(--text-2); margin-bottom:6px;">Files to Ingest:</div>
+          <div style="font-size:12.5px; font-weight:600; color:var(--text-2); margin-bottom:6px;">Files ready for upload:</div>
           <div id="file-queue-list" style="display:flex; flex-direction:column; gap:6px;"></div>
         </div>
 
         <div class="prog-wrap" id="prog-wrap">
           <div class="prog-info">
-            <span id="prog-label">Uploading &amp; Ingesting…</span>
+            <span id="prog-label">Uploading &amp; processing…</span>
             <span id="prog-pct">0%</span>
           </div>
           <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
@@ -168,7 +179,7 @@
 
         <div class="upload-ok" id="upload-ok">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          <span id="upload-ok-msg">Documents queued and indexing into Neo4j &amp; Vector DB!</span>
+          <span id="upload-ok-msg">Documents uploaded and processing started.</span>
         </div>
         <div class="upload-error" id="upload-error">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -177,38 +188,38 @@
 
         <button class="btn-upload" id="upload-btn" onclick="window.doUpload()">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          Start Ingestion
+          Upload &amp; Process
         </button>
       </div>
     </div>
 
+    <!-- Quality Check Section -->
     <div id="section-eval" style="display: none;">
-      <!-- RAGAS Evaluation Panel -->
       <div class="panel">
         <div class="panel-head">
           <div class="panel-head-left">
-            <h3>RAGAS Evaluation</h3>
-            <p>RAG pipeline quality metrics on the evaluation set</p>
+            <h3>Answer Quality &amp; Accuracy</h3>
+            <p>Verified checks across syllabus lookup, prerequisites, past questions, and response speed</p>
           </div>
-          <span class="panel-tag">Metrics</span>
+          <span class="panel-tag">Quality Report</span>
         </div>
 
         <div class="eval-stats">
           <div class="eval-stat">
-            <div class="esv" id="eval-count">—</div>
-            <div class="esl">Queries evaluated</div>
+            <div class="esv" id="eval-count">20</div>
+            <div class="esl">Checks run</div>
           </div>
           <div class="eval-stat">
             <div class="esv" id="eval-mean">—</div>
-            <div class="esl">Mean score</div>
+            <div class="esl">Mean accuracy</div>
           </div>
           <div class="eval-stat">
-            <div class="esv">5</div>
-            <div class="esl">Metrics tracked</div>
+            <div class="esv">6</div>
+            <div class="esl">Categories</div>
           </div>
           <div class="eval-stat">
-            <div class="esv">v1.0</div>
-            <div class="esl">Pipeline version</div>
+            <div class="esv">Live</div>
+            <div class="esl">Status</div>
           </div>
         </div>
 
@@ -217,30 +228,30 @@
         </div>
         <div class="eval-status">
           <span class="status-dot"></span>
-          <span id="eval-status-text">Click below to run a fresh evaluation.</span>
+          <span id="eval-status-text">Click below to run a fresh quality check.</span>
         </div>
         <div style="margin-top:12px;">
           <button class="btn-upload" id="run-eval-btn" onclick="window.runEvaluation()" style="height:38px;font-size:13px;">
-            Run Evaluation Pipeline
+            Run Quality Check
           </button>
         </div>
       </div>
     </div>
 
+    <!-- Settings Section -->
     <div id="section-settings" style="display: none;">
-      <!-- Danger Zone -->
       <div class="panel">
         <div class="panel-head">
           <div class="panel-head-left">
             <h3>System Settings</h3>
-            <p>Destructive actions — use with caution</p>
+            <p>Manage uploaded data and reset options</p>
           </div>
-          <span class="panel-tag" style="background:#FFF5F5;color:#B91C1C;border-color:#F5C6CB;">Danger</span>
+          <span class="panel-tag" style="background:#FFF5F5;color:#B91C1C;border-color:#F5C6CB;">Danger Zone</span>
         </div>
         <div class="danger-zone">
-          <h4>⚠ Reset Entire System</h4>
-          <p>This will permanently delete ALL documents, ALL knowledge graph data, ALL uploaded files, and ALL chat history. This action cannot be undone.</p>
-          <button class="btn-danger" id="reset-btn" onclick="window.resetSystem()">Reset Everything</button>
+          <h4>Clear All Data</h4>
+          <p>This will permanently delete all uploaded documents, syllabus records, question data, and extracted diagrams. This action cannot be undone.</p>
+          <button class="btn-danger" id="reset-btn" onclick="window.resetSystem()">Reset All Data</button>
         </div>
         <div id="reset-status" style="margin-top:12px;font-size:13px;color:var(--text-3);"></div>
       </div>
@@ -248,7 +259,6 @@
 
   </main>
 </div>
-<script type="module" src="js/page_admin.js?v=2"></script>
+<script type="module" src="js/page_admin.js?v=5"></script>
 </body>
 </html>
-

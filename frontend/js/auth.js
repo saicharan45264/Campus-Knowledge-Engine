@@ -1,8 +1,6 @@
 /**
- * 🔐 AUTHENTICATION MODULE
- * Manages JWT (JSON Web Token) storage and route guarding.
- * Security Note for FYP: In a production enterprise app, we'd use HTTP-only cookies to prevent XSS. 
- * For this prototype, localStorage is used for simplicity and statelessness.
+ * M.A.C.H. AI — Client Authentication & Session Management
+ * Manages JWT tokens, student/admin role verification, and route guards.
  */
 export function getToken() {
   return localStorage.getItem('access_token') || '';

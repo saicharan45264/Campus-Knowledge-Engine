@@ -1,2 +1,5 @@
-extend = "backend/ruff.toml"
-cache-dir = "backend/cache/.ruff_cache"
+line-length = 120
+target-version = "py311"
+
+[lint]
+ignore = ["B008", "BLE001", "ASYNC230", "SIM102", "S110"]

@@ -1,8 +1,10 @@
 /**
- * 🎓 LOGIN PAGE CONTROLLER & KNOWLEDGE GRAPH ANIMATION
+ * M.A.C.H. AI — Authentication Portal Controller
+ * Manages user authentication, role verification, and the interactive Knowledge Graph canvas animation.
  */
 import { API_BASE } from './api.js';
 import { setAuth } from './auth.js';
+import { decodeJwtPayload } from './utils.js';
 
 /* ── Login ── */
 async function doLogin(roleHint) {
@@ -21,6 +23,7 @@ async function doLogin(roleHint) {
     const form = new URLSearchParams();
     form.append('username', u);
     form.append('password', p);
+    form.append('role', roleHint);
 
     const res = await fetch(`${API_BASE}/login`, {
       method: 'POST',
@@ -37,11 +40,15 @@ async function doLogin(roleHint) {
     }
 
     const data = await res.json();
-    const payload = JSON.parse(atob(data.access_token.split('.')[1]));
-    const role = payload.role || (u === 'admin' ? 'admin' : 'student');
+    const payload = decodeJwtPayload(data.access_token);
+    const role = data.role || payload.role;
+    if (role !== roleHint) {
+      errEl.textContent = `Please use the ${role === 'admin' ? 'Admin' : 'Student'} button to sign in with this account.`;
+      return;
+    }
     
     setAuth(data.access_token, role, u);
-    // Redirect based on role
+    // Redirect based on verified role
     window.location.href = role === 'admin' ? 'admin.html' : 'student.html';
 
   } catch (e) {
@@ -60,6 +67,7 @@ document.getElementById('auth-pass').addEventListener('keydown', e => {
 // Clear stale token on login page load
 localStorage.removeItem('access_token');
 localStorage.removeItem('user_role');
+localStorage.removeItem('username');
 
 
 /* ══════════════════════════════════════════════════════════════

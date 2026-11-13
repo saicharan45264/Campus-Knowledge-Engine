@@ -4,6 +4,19 @@
   background: var(--brand); position: relative; overflow: hidden;
   display: flex; flex-direction: column;
 }
+.auth-top-brand {
+  position: absolute; top: 22px; left: 26px; z-index: 4;
+  display: inline-flex; align-items: center; gap: 10px;
+  text-decoration: none; color: rgba(255,255,255,.94);
+  font-family: 'Outfit', sans-serif; font-size: 15px; font-weight: 700; letter-spacing: -.3px;
+  cursor: pointer; transition: opacity .15s ease, transform .15s ease;
+}
+.auth-top-brand:hover { opacity: .88; transform: translateY(-0.5px); }
+.auth-top-icon {
+  width: 34px; height: 34px; border-radius: 9px; object-fit: cover;
+  border: 1.5px solid rgba(255,255,255,.32);
+  box-shadow: 0 3px 10px rgba(0,0,0,.18);
+}
 .auth-graph-zone { position: relative; height: 58%; flex-shrink: 0; overflow: hidden; }
 #kg-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
@@ -38,10 +51,15 @@
 .login-card { width: 100%; max-width: 360px; }
 
 .login-card-header { margin-bottom: 32px; }
+.login-card-brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.login-card-icon {
+  width: 38px; height: 38px; border-radius: 10px; object-fit: cover; flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(164, 18, 63, .22);
+}
 .login-card-header h2 {
   font-family: 'Outfit', sans-serif;
-  font-size: 30px; font-weight: 700; color: var(--text);
-  letter-spacing: -.6px; margin-bottom: 5px;
+  font-size: 28px; font-weight: 700; color: var(--text);
+  letter-spacing: -.6px; margin-bottom: 0;
 }
 .login-card-header p { font-size: 14px; color: var(--text-3); line-height: 1.5; }
 
@@ -68,22 +86,6 @@
 }
 
 .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 22px; }
-
-.auth-demo {
-  margin-top: 28px; padding: 14px 16px;
-  background: var(--surface-2); border-radius: var(--r-sm);
-  border-left: 3px solid var(--brand-20);
-}
-.auth-demo-title {
-  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .08em; color: var(--text-4); margin-bottom: 8px;
-}
-.auth-demo-row {
-  display: flex; justify-content: space-between;
-  font-family: 'IBM Plex Mono', monospace; font-size: 12px;
-  color: var(--text-2); padding: 3px 0;
-}
-.auth-demo-row span:last-child { color: var(--text-4); }
 
 @media(max-width: 900px) {
   #auth-view { grid-template-columns: 1fr; }

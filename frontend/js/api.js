@@ -1,7 +1,6 @@
 /**
- * 🌐 CORE API LAYER
- * Handles all backend communication for MACH AI (M.A.C.H. - Multimodel Academic Cognitive Hub).
- * Designed to act as an interceptor for injecting auth tokens natively without external libraries.
+ * M.A.C.H. AI — Core API Transport Layer (Multimodal Academic Cognitive Hub)
+ * Injects cryptographic Bearer tokens and handles unauthorized redirection.
  */
 
 // Determine API base URL dynamically based on environment.

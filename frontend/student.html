@@ -1,7 +1,6 @@
 <!--
-  ~ 🎓 Student Dashboard - MACH AI (M.A.C.H. - Multimodel Academic Cognitive Hub)
-  ~ The primary interface for interacting with our RAG (Retrieval-Augmented Generation) AI.
-  ~ Features streaming responses, Voice AI integration, and robust a11y support.
+  ~ M.A.C.H. AI — Student Portal
+  ~ Amrita Vishwa Vidyapeetham · Coimbatore
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -9,15 +8,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MACH AI — Chat</title>
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png?v=11">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png?v=11">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=11">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png?v=11">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css?v=4">
-<link rel="stylesheet" href="css/page_student.css?v=5">
-<!-- DOMPurify to prevent XSS attacks -->
+<link rel="stylesheet" href="css/variables.css?v=9">
+<link rel="stylesheet" href="css/base.css?v=9">
+<link rel="stylesheet" href="css/components.css?v=9">
+<link rel="stylesheet" href="css/layout.css?v=9">
+<link rel="stylesheet" href="css/page_student.css?v=9">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
-<!-- Marked.js for robust markdown parsing -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.0/marked.min.js"></script>
-<!-- KaTeX for math rendering -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <link rel="manifest" href="./manifest.json">
@@ -33,20 +39,23 @@
   <!-- Top Navigation Bar -->
   <nav class="top-nav">
     <div class="nav-brand">
-      <div class="nav-logo">M.A.C.H.<sub>AI</sub></div>
+      <a href="student.html" class="brand-refresh-link" onclick="window.refreshPage && window.refreshPage(event)" title="Refresh page">
+        <img src="icons/icon-192.png" alt="MACH AI" class="brand-icon-img">
+        <div class="nav-logo">M.A.C.H.<sub>AI</sub></div>
+      </a>
     </div>
-    <div class="nav-mid">
-      <div class="nav-context">Curriculum Assistant · <strong>All indexed courses</strong></div>
-    </div>
+    <div class="nav-mid"></div>
     <div class="nav-right">
       <div class="user-pill">
-        <div class="avatar" id="student-avatar">ST</div>
+        <div class="avatar" id="student-avatar" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+        </div>
         <div>
           <div class="user-name" id="student-name">Student</div>
-          <div class="user-roll">Batch 2023 · CSE</div>
+          <div class="user-roll">B.Tech · CSE</div>
         </div>
       </div>
-      <button class="btn-icon" title="Logout" onclick="window.logout()" aria-label="Logout">
+      <button class="btn-icon" title="Sign out" onclick="window.logout()" aria-label="Sign out">
         <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
       </button>
     </div>
@@ -82,7 +91,7 @@
           </button>
         </div>
         <div class="input-wrap">
-          <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, PYQs, or any topic…"></textarea>
+          <textarea class="chat-ta" id="chat-input" rows="1" placeholder="Ask about your syllabus, curriculum, or past exam questions…"></textarea>
           <div class="input-btns">
             <label class="btn-attach" title="Attach image">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -93,6 +102,9 @@
             </button>
             <button class="btn-send" id="send-btn" onclick="window.sendMessage()" aria-label="Send Message" title="Send">
               <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+            <button class="btn-stop" id="stop-btn" onclick="window.stopGeneration()" aria-label="Pause Query" title="Pause / Stop query" style="display:none;">
+              <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
             </button>
           </div>
         </div>
@@ -107,6 +119,6 @@
   <img id="lightbox-img" src="" alt="Full Screen Image" />
 </div>
 
-<script type="module" src="js/page_student.js?v=5"></script>
+<script type="module" src="js/page_student.js?v=10"></script>
 </body>
 </html>

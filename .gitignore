@@ -1,38 +1,93 @@
-# ── Python ──
+# ==============================================================================
+# M.A.C.H. AI — Git Ignore Specifications
+# ==============================================================================
+
+# ── Python Bytecode & Compilation ──
 __pycache__/
 *.py[cod]
-*.egg-info/
-*.egg
-dist/
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── Virtual Environments ──
 venv/
 .venv/
-backend/cache/
-.ruff_cache/
+env/
+ENV/
+env.bak/
+venv.bak/
 
-# ── Data ──
-backend/uploads/
+# ── Caches & Test Frameworks ──
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+backend/cache/
+htmlcov/
+.coverage
+.coverage.*
+.tox/
+.nox/
+
+# ── Local Environment & Secrets ──
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.cert
+*.crt
+
+# ── Uploads & Runtime Storage ──
 uploads/
+backend/uploads/
 *.pdf
 *.pptx
+*.dump
 
-# ── Environment ──
-.env
-*.env.local
+# Exclude generated crops/diagrams from repo root, but preserve static frontend assets
+*.png
+*.jpg
+*.jpeg
+*.svg
+!frontend/icons/*
+!frontend/favicon.ico
+!frontend/src/**/*.svg
 
-# ── IDE ──
+# ── Benchmark Logs & Telemetry ──
+scripts/benchmark_results.json
+*.log
+
+# ── IDEs, Editors & OS Files ──
 .vscode/
 .idea/
 *.swp
-
-# ── Node.js (Frontend) ──
-node_modules/
-.next/
-out/
-
-# ── Docker ──
-docker-compose.override.yml
-
-# ── OS ──
-Thumbs.db
+*.swo
+*~
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── Docker Local Overrides ──
+docker-compose.override.yml
+*.docker.log

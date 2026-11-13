@@ -1,8 +1,7 @@
 /* 
- * 🎨 BASE STYLESHEET
- * MACH AI UI Framework (M.A.C.H. - Multimodel Academic Cognitive Hub)
- * We purposefully avoided Bootstrap/Tailwind to demonstrate our core CSS architecture skills. 
- * This file handles CSS resets, fluid typography basics, and a11y focus states.
+ * M.A.C.H. AI — Core Base Stylesheet
+ * Amrita Vishwa Vidyapeetham · Coimbatore
+ * Handles CSS resets, typography baselines, and accessibility focus states.
  */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }

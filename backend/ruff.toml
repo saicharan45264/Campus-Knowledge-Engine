@@ -1,4 +1,0 @@
-cache-dir = "cache/.ruff_cache"
-
-[lint]
-ignore = ["B008", "BLE001", "ASYNC230", "SIM102", "S110"]

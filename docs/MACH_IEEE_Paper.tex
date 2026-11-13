@@ -181,7 +181,7 @@ H(I) = \text{MD5}(\text{bytes}(I))
 \end{equation}
 
 \subsection{Module 2: Multimodal Academic Knowledge Graph (MM-AKG)}
-We formalize the academic domain as a directed, attributed heterogeneous property graph $\mathcal{G}_{\text{AKG}} = (\mathcal{V}, \mathcal{E}, \mathcal{T}_v, \mathcal{T}_e)$, where node types $\mathcal{T}_v$ include \textit{Department}, \textit{Course}, \textit{Unit}, \textit{Topic}, \textit{Question}, \textit{BloomLevel}, \textit{CourseOutcome}, and \textit{VisualArtefact}. Edge relations $\mathcal{T}_e$ comprise \textit{OFFERS}, \textit{REQUIRES\_PREREQ}, \textit{HAS\_UNIT}, \textit{COVERS\_TOPIC}, \textit{TESTS\_TOPIC}, \textit{HAS\_BTL}, \textit{MAPS\_TO\_CO}, and \textit{BINDS\_DIAGRAM}.
+We formalize the academic domain as a directed, attributed heterogeneous property graph $\mathcal{G}_{\text{AKG}} = (\mathcal{V}, \mathcal{E}, \mathcal{T}_v, \mathcal{T}_e)$, where node types $\mathcal{T}_v$ include \textit{Program}, \textit{SyllabusVersion}, \textit{Semester}, \textit{electiveCourse}, \textit{ElectiveBasket}, \textit{CurriculumRule}, \textit{Course}, \textit{EvaluationPattern}, \textit{AssessmentComponent}, \textit{Unit}, \textit{Topic}, \textit{Question}, \textit{ExamPaper}, and \textit{CourseOutcome}. Edge relations $\mathcal{T}_e$ comprise \textit{HAS\_SYLLABUS\_VERSION}, \textit{CONTAINS\_SEMESTER}, \textit{OFFERS}, \textit{HAS\_ELECTIVE\_COURSE}, \textit{REQUIRES}, \textit{HAS\_EVALUATION\_PATTERN}, \textit{ASSESSED\_BY}, \textit{HAS\_UNIT}, \textit{HAS\_TOPIC}, \textit{TESTS}, \textit{BELONGS\_TO}, and \textit{HAS\_OUTCOME}.
 
 The full prerequisite closure $\mathcal{C}^*(C)$ for a target course $C$ across arbitrary dependency depths is retrieved via recursive traversal:
 \begin{equation}
@@ -271,8 +271,8 @@ Algorithm~\ref{alg:routing} details the complete control logic of M.A.C.H. AI, g
 Experiments were conducted on on-premise hardware representing departmental infrastructure:
 \begin{itemize}
     \item \textbf{Host Hardware:} 1x NVIDIA Tesla T4 GPU (16GB VRAM) and Apple Silicon M-series (10-core CPU, 16GB RAM).
-    \item \textbf{Inference Engine:} Ollama runtime (v0.5.x) serving fine-tuned \texttt{gemma4:12b-mach} and baseline \texttt{gemma4:12b-it-qat} \cite{gemma2026technical}.
-    \item \textbf{Embeddings \& Datastores:} \texttt{nomic-embed-text} ($d=768$) \cite{nussbaum2024nomic}, PostgreSQL 16 with \texttt{pgvector} (v0.7.0), and Neo4j Community Edition (v5.20).
+    \item \textbf{Inference Engine:} Ollama runtime serving multimodal \texttt{gemma4:12b-it-qat} and fine-tuned \texttt{gemma4:12b-mach} \cite{gemma2026technical}.
+    \item \textbf{Embeddings \& Datastores:} Unified multimodal \texttt{embeddinggemma-2} ($d=768$, \texttt{halfvec} HNSW) \cite{embeddinggemma2025}, PostgreSQL 16 with \texttt{pgvector}, and Neo4j Community Edition (v5.24).
     \item \textbf{Ingestion Pipeline:} PyMuPDF library (v1.24.x) for deterministic multi-pass layout parsing.
 \end{itemize}
 
@@ -374,9 +374,9 @@ Table~\ref{tab:components} presents the estimated execution time of individual p
 \textbf{Pipeline Component} & \textbf{Execution Engine} & \textbf{Target Hardware} & \textbf{Latency (ms)} \\
 \midrule
 Tier 1 Lexical Routing & Python regex & Host CPU & 0.4 ms \\
-Tier 2 Embedding Cosine & \texttt{nomic-embed-text} & Host CPU / Metal & 18.5 ms \\
+Tier 2 Embedding Cosine & \texttt{embeddinggemma-2} & Host CPU / Metal & 18.5 ms \\
 Neo4j Cypher Traversal & Bolt Protocol & In-Memory Graph & 12.4 ms \\
-PostgreSQL RRF Retrieval & \texttt{pgvector} IVFFlat & PostgreSQL Engine & 24.1 ms \\
+PostgreSQL RRF Retrieval & \texttt{pgvector} HNSW (\texttt{halfvec}) & PostgreSQL Engine & 24.1 ms \\
 Image Hash / LRU Cache & MD5 / In-Memory & Host CPU & 1.2 ms \\
 VLM Feature Extraction & \texttt{gemma4:12b-it-qat} & GPU (16GB VRAM) & 850.0 ms (Index) \\
 Fine-Tuned Prefill (1.2k tok) & Ollama Engine & GPU / Metal & 1200.0 ms (TTFT) \\

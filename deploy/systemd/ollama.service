@@ -1,0 +1,31 @@
+# =============================================================================
+# M.A.C.H. AI — Ollama Systemd Daemon Unit Configuration
+# Ensures continuous local LLM & Embedding inference service availability
+# =============================================================================
+
+[Unit]
+Description=Ollama High-Performance Local AI Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/ollama serve
+User=ollama
+Group=ollama
+Restart=always
+RestartSec=3
+
+# Environment parameters
+Environment="OLLAMA_HOST=0.0.0.0"
+Environment="OLLAMA_PORT=11434"
+# Restrict parallel allocations to prevent GPU out-of-memory errors
+Environment="OLLAMA_NUM_PARALLEL=2"
+# Keep model weights resident in VRAM for rapid response
+Environment="OLLAMA_KEEP_ALIVE=24h"
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

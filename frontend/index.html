@@ -1,8 +1,6 @@
 <!--
-  ~ 🎓 M.A.C.H. - Multimodel Academic Cognitive Hub - A Fine-tuned Graph-RAG framework for Campus Knowledge Systems
-  ~ Developed as our Final Year Project (FYP).
-  ~ Entry point of the application featuring our custom Canvas-based Knowledge Graph animation.
-  ~ Fully responsive, semantic HTML, and PWA ready!
+  ~ M.A.C.H. AI — Sign In
+  ~ Amrita Vishwa Vidyapeetham · Coimbatore
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -10,10 +8,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign In — MACH AI</title>
+<link rel="icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="shortcut icon" type="image/x-icon" href="favicon.ico?v=11">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png?v=11">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png?v=11">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=11">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png?v=11">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css?v=2">
-<link rel="stylesheet" href="css/page_login.css?v=2">
+<link rel="stylesheet" href="css/variables.css?v=5">
+<link rel="stylesheet" href="css/base.css?v=5">
+<link rel="stylesheet" href="css/components.css?v=5">
+<link rel="stylesheet" href="css/layout.css?v=5">
+<link rel="stylesheet" href="css/page_login.css?v=5">
 <link rel="manifest" href="./manifest.json">
 <script>
   if ('serviceWorker' in navigator) {
@@ -24,19 +32,23 @@
 <body>
 <div id="auth-view">
 
-  <!-- Left: Animated Knowledge Graph panel -->
+  <!-- Left: Interactive Brand Showcase -->
   <div class="auth-left">
+    <a href="index.html" class="auth-top-brand" onclick="window.refreshPage && window.refreshPage(event)" title="Refresh page">
+      <img src="icons/icon-192.png" alt="MACH AI" class="auth-top-icon">
+      <span>M.A.C.H. AI</span>
+    </a>
     <div class="auth-graph-zone">
       <canvas id="kg-canvas"></canvas>
     </div>
     <div class="auth-brand">
       <div class="auth-eyebrow">Amrita Vishwa Vidyapeetham · Coimbatore</div>
       <div class="auth-logo">M.A.C.H.</div>
-      <p class="auth-tagline">A knowledge graph &amp; RAG system that makes your entire curriculum searchable, comparable, and queryable — in plain language.</p>
+      <p class="auth-tagline">Your smart academic companion. Search curriculum, trace prerequisites, explore syllabus units, and practice past exam papers with diagrams — in seconds.</p>
       <div class="auth-pills">
-        <div class="auth-pill">Knowledge Graph</div>
-        <div class="auth-pill">RAG · Retrieval</div>
-        <div class="auth-pill">Syllabus + PYQ</div>
+        <div class="auth-pill">Instant Answers</div>
+        <div class="auth-pill">Visual Exam Prep</div>
+        <div class="auth-pill">Smart Course Map</div>
       </div>
     </div>
   </div>
@@ -45,8 +57,10 @@
   <div class="auth-right">
     <div class="login-card">
       <div class="login-card-header">
-        <h2>Sign in to MACH AI</h2>
-        <p>Multimodel Academic Cognitive Hub — your AI-powered study companion.</p>
+        <div class="login-card-brand-row">
+          <img src="icons/icon-192.png" alt="MACH AI" class="login-card-icon">
+          <h2>Sign in to MACH AI</h2>
+        </div>
       </div>
       <div class="form-group">
         <label>Username</label>
@@ -67,15 +81,10 @@
           Admin
         </button>
       </div>
-      <div class="auth-demo">
-        <div class="auth-demo-title">Demo credentials</div>
-        <div class="auth-demo-row"><span>student / student123</span><span>Student access</span></div>
-        <div class="auth-demo-row"><span>admin / admin123</span><span>Admin access</span></div>
-      </div>
     </div>
   </div>
 
 </div>
-<script type="module" src="js/page_login.js?v=2"></script>
+<script type="module" src="js/page_login.js?v=5"></script>
 </body>
 </html>
