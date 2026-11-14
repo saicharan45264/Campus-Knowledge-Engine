@@ -464,6 +464,67 @@ def expand_subgraph_context(neo4j_driver, query_term: str) -> dict:
     return {}
 
 
+def filter_contrasting_subtopics(questions: list[dict], query_topic: str) -> list[dict]:
+    """
+    Prevents composite topics (e.g., 'Mesh and Node methods', 'Inductance and Capacitance',
+    'Series parallel combination of R', 'Voltage Divider and Current Divider Rules',
+    'Clippers and Clampers') from leaking contrasting questions into specific subtopic queries.
+    """
+    if not questions or not query_topic:
+        return questions
+    q_low = query_topic.lower()
+
+    contrast_pairs = [
+        # Mesh vs Nodal methods
+        (r"\bmesh\b", r"\b(?:node|nodal)\b"),
+        (r"\b(?:node|nodal)\b", r"\bmesh\b"),
+        # R vs C vs L electrical components
+        (r"\bcapacit", r"\b(?:resistor|resistance|resistors|inductor|inductance|inductors|leqv)\b"),
+        (r"\bresist", r"\b(?:capacitor|capacitance|capacitors|inductor|inductance|inductors|leqv)\b"),
+        (r"\binduct", r"\b(?:resistor|resistance|resistors|capacitor|capacitance|capacitors)\b"),
+        # Voltage divider vs Current divider
+        (r"\bvoltage\s+divid", r"\bcurrent\s+divid"),
+        (r"\bcurrent\s+divid", r"\bvoltage\s+divid"),
+        # Clippers vs Clampers
+        (r"\bclipper\b", r"\bclamper\b"),
+        (r"\bclamper\b", r"\bclipper\b"),
+        # Half wave vs Full wave
+        (r"\bhalf\s*wave\b", r"\bfull\s*wave\b"),
+        (r"\bfull\s*wave\b", r"\bhalf\s*wave\b"),
+        # Inverting vs Non-inverting amplifier
+        (r"\binverting\b(?!\s*amplifier)", r"\bnon[- ]inverting\b"),
+        (r"\bnon[- ]inverting\b", r"\binverting\b"),
+    ]
+
+    active_filters = []
+    for req_pat, contr_pat in contrast_pairs:
+        if re.search(req_pat, q_low) and not re.search(contr_pat, q_low):
+            active_filters.append((req_pat, contr_pat))
+
+    if not active_filters:
+        return questions
+
+    filtered = []
+    for q in questions:
+        q_text = (q.get("text") or "").lower()
+        q_topic = (q.get("topic_name") or "").lower()
+        q_full = f"{q_text} {q_topic}"
+
+        drop = False
+        for req_pat, contr_pat in active_filters:
+            # 1. Must match what was requested
+            if not re.search(req_pat, q_full):
+                drop = True
+                break
+            # 2. Must not be purely contrasting
+            if re.search(contr_pat, q_full) and not re.search(req_pat, q_text):
+                drop = True
+                break
+        if not drop:
+            filtered.append(q)
+    return filtered
+
+
 async def fetch_problems_by_topic_graph(
     neo4j_driver, topic: str, course_code: str | None = None
 ) -> list[dict]:
@@ -507,7 +568,9 @@ async def fetch_problems_by_topic_graph(
             c_filter=c_filter,
         ).data()
         if direct_rows:
-            return direct_rows
+            direct_filtered = filter_contrasting_subtopics(direct_rows, raw_topic)
+            if direct_filtered:
+                return direct_filtered
 
         # 2. Semantic embedding similarity over Topic nodes that have linked Questions (catches phrasing variants)
         tested_topics = session.run(
@@ -548,7 +611,9 @@ async def fetch_problems_by_topic_graph(
                     c_filter=c_filter,
                 ).data()
                 if sem_rows:
-                    return sem_rows
+                    sem_filtered = filter_contrasting_subtopics(sem_rows, raw_topic)
+                    if sem_filtered:
+                        return sem_filtered
 
         # 3. Guarded Neo4j fulltext search on Topic names
         if clean_topic:
@@ -577,7 +642,9 @@ async def fetch_problems_by_topic_graph(
                     )
                     ft_data = ft_result.data()
                     if ft_data:
-                        return ft_data
+                        ft_filtered = filter_contrasting_subtopics(ft_data, raw_topic)
+                        if ft_filtered:
+                            return ft_filtered
             except Exception:
                 pass
 
@@ -587,7 +654,7 @@ async def fetch_problems_by_topic_graph(
 def fetch_all_problems_by_topic(
     neo4j_driver, topic: str, course_code: str | None = None
 ) -> list[dict]:
-    """Retrieve questions strictly matching the requested topic tokens in text, diagram summary, or mapped Topic."""
+    """Retrieve questions strictly matching the requested topic tokens in text or mapped Topic."""
     stop_words = {
         "get", "me", "a", "the", "all", "questions", "question", "problems",
         "problem", "solve", "solved", "solutions", "solution", "calculate",
@@ -597,22 +664,41 @@ def fetch_all_problems_by_topic(
         "who", "where", "can", "you", "tell", "explain", "describe", "provide",
         "in", "of", "to", "for", "with", "and", "or", "not", "this", "that", "only",
     }
-    words = [
+    raw_tokens = [
         w.strip(".,!?-'\"")
         for w in topic.lower().split()
         if len(w.strip(".,!?-'\"")) > 2 and w.strip(".,!?-'\"") not in stop_words
     ]
-    if not words:
+    if not raw_tokens:
         cleaned = topic.strip().lower()
         if cleaned in stop_words or not cleaned:
             return []
-        words = [cleaned]
+        raw_tokens = [cleaned]
+
+    def _stem_term(w: str) -> str:
+        for suffix in ("ance", "ors", "or", "ive", "ing", "ion", "s"):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 4:
+                return w[:-len(suffix)]
+        return w
+
+    circuit_synonyms = {
+        "combination": ["combinat", "combination", "equivalent"],
+        "combinat": ["combinat", "combination", "equivalent"],
+        "combinations": ["combinat", "combination", "equivalent"],
+        "equivalent": ["combinat", "combination", "equivalent"],
+    }
+
+    token_groups: list[list[str]] = []
+    for tok in raw_tokens:
+        stem = _stem_term(tok)
+        if stem in circuit_synonyms:
+            token_groups.append(circuit_synonyms[stem])
+        elif tok in circuit_synonyms:
+            token_groups.append(circuit_synonyms[tok])
+        else:
+            token_groups.append(list(set([stem, tok])))
 
     c_filter = course_code.upper().strip() if course_code else None
-    expanded_words = [
-        w for w in re.findall(r"[a-z0-9]+", _expand_topic_acronyms(" ".join(words)).lower())
-        if len(w) > 2
-    ]
 
     with neo4j_driver.session() as session:
         result = session.run(
@@ -622,14 +708,15 @@ def fetch_all_problems_by_topic(
             OPTIONAL MATCH (q)-[:TESTS|TESTS_TOPIC]->(t:Topic)
             WITH q,
                  coalesce(q.course_code, '') AS code,
-                 collect(DISTINCT toLower(coalesce(t.name, ''))) AS tnames,
-                 toLower(coalesce(q.text, '') + ' ' + coalesce(q.diagram_summary, '')) AS qhay
-            WITH q, code, tnames, qhay,
+                 collect(DISTINCT coalesce(t.name, '')) AS tnames,
+                 toLower(coalesce(q.text, '')) AS qtext
+            WITH q, code, tnames, qtext,
+                 [tn IN tnames | toLower(tn)] AS tnames_lower
+            WITH q, code, tnames, qtext, tnames_lower,
                  (CASE WHEN toLower(code) = toLower($topic) THEN 10
-                       WHEN qhay CONTAINS toLower($topic) THEN 8
-                       WHEN any(tn IN tnames WHERE tn CONTAINS toLower($topic)) THEN 7
-                       WHEN size($words) > 0 AND all(w IN $words WHERE qhay CONTAINS w) THEN 6
-                       WHEN size($words) > 0 AND any(tn IN tnames WHERE all(w IN $words WHERE tn CONTAINS w)) THEN 5
+                       WHEN qtext CONTAINS toLower($topic) THEN 8
+                       WHEN any(tn IN tnames_lower WHERE tn CONTAINS toLower($topic)) THEN 7
+                       WHEN size($token_groups) > 0 AND all(group IN $token_groups WHERE any(alt IN group WHERE qtext CONTAINS alt OR any(tn IN tnames_lower WHERE tn CONTAINS alt))) THEN 6
                        ELSE 0 END) AS score
             WHERE score > 0
             RETURN DISTINCT q.id AS id,
@@ -643,16 +730,16 @@ def fetch_all_problems_by_topic(
                    q.image_url AS image_url,
                    q.diagram_summary AS diagram_summary,
                    code AS course_code,
+                   head([tn IN tnames WHERE tn <> '']) AS topic_name,
                    score
             ORDER BY score DESC, (CASE WHEN q.has_figure THEN 1 ELSE 0 END) DESC
             LIMIT 20
             """,
-            topic=" ".join(words),
-            words=words,
-            exp_words=expanded_words,
+            topic=" ".join(raw_tokens),
+            token_groups=token_groups,
             c_filter=c_filter,
         )
-        return result.data()
+        return filter_contrasting_subtopics(result.data(), topic)
 
 
 def _resolve_course_fuzzy(session, phrase: str, words: list[str], limit: int = 10) -> list[dict]:

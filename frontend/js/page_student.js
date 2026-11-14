@@ -264,7 +264,7 @@ function renderProblemCards(data) {
     const marks   = p.marks   ? `<span class="pc-mark">${p.marks} marks</span>` : '';
     const btl     = p.btl    ? `<span class="pc-btl">${btlLabel(p.btl)}</span>` : '';
     const course  = p.course_code ? `<span class="pc-course">${escapeHtml(p.course_code)}</span>` : '';
-    const topicTag = p.topic_name ? `<span class="pc-topic-badge" style="font-size:11px;padding:2px 7px;background:#ede9fe;color:#6d28d9;border-radius:4px;border:1px solid #ddd6fe;font-weight:500;">📌 ${escapeHtml(p.topic_name)}</span>` : '';
+    const topicTag = p.topic_name ? `<span class="pc-topic-badge" style="font-size:11px;padding:2px 7px;background:#ede9fe;color:#6d28d9;border-radius:4px;border:1px solid #ddd6fe;font-weight:500;display:inline-flex;align-items:center;gap:4px;"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>${escapeHtml(p.topic_name)}</span>` : '';
     
     // Zoomable Image
     const resolvedImgUrl = p.image_url && p.image_url !== 'None'
