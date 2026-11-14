@@ -254,6 +254,8 @@ def main() -> int:
     import torch
     from datasets import Dataset
     from peft import LoraConfig, prepare_model_for_kbit_training
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from trl import SFTConfig, SFTTrainer
 
