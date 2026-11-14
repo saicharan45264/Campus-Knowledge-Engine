@@ -1,4 +1,4 @@
-"""QLoRA fine-tuning for the academic tool router; intended for a Kaggle GPU."""
+"""QLoRA fine-tuning for the academic tool router; runs on free Colab/Kaggle T4 GPU."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from validate_routing_data import REQUIRED_TOOLS
 
 ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = ROOT / "academic_tool_schemas.json"
-DEFAULT_MODEL = "google/gemma-4-12B-it"
+DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 SEED = 73021
 
 
@@ -77,7 +77,10 @@ def prepare_splits(
     return train, evaluation
 
 
-def _messages(row: dict[str, Any], schemas: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+def _messages(row: dict[str, Any]) -> list[dict]:
+    """Build a plain conversational message list for Qwen training.
+    Assistant response is plain JSON text so the tokenizer chat template works without tool schemas.
+    """
     query = str(row.get("query") or row.get("input") or "").strip()
     if not query:
         raise ValueError("A training row has an empty query")
@@ -95,14 +98,11 @@ def _messages(row: dict[str, Any], schemas: list[dict[str, Any]]) -> tuple[list[
     elif tool in REQUIRED_TOOLS:
         messages.append({
             "role": "assistant",
-            "tool_calls": [{
-                "type": "function",
-                "function": {"name": tool, "arguments": arguments},
-            }],
+            "content": json.dumps({"tool": tool, "arguments": arguments}, ensure_ascii=False),
         })
     else:
         raise ValueError(f"Unknown tool {tool!r} for query {query!r}")
-    return messages, schemas
+    return messages
 
 
 def _first_json_object(text: str) -> dict[str, Any] | None:
@@ -166,7 +166,6 @@ def parse_router_output(text: str, known_tools: set[str]) -> tuple[str | None, d
             continue
         args = _first_json_object(text[match.end() :])
         if args is not None:
-            # Some serializers wrap function arguments as {"arguments": {...}}.
             if set(args) == {"arguments"} and isinstance(args["arguments"], dict):
                 args = args["arguments"]
             return name, args, True
@@ -206,29 +205,23 @@ def score_predictions(expected_rows: list[dict[str, Any]], predictions: list[str
     return {"overall": rates(counts), "by_expected_route": {key: rates(by_label[key]) for key in labels if by_label[key]["total"]}}
 
 
-def generate_predictions(model: Any, processor: Any, rows: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> list[str]:
+def generate_predictions(model: Any, tokenizer: Any, rows: list[dict[str, Any]], schemas: list[dict[str, Any]]) -> list[str]:
     import torch
 
     model.eval()
     predictions = []
     for index, row in enumerate(rows, 1):
         query = str(row.get("query") or row.get("input") or "").strip()
-        inputs = processor.apply_chat_template(
-            [
-                {"role": "system", "content": SYSTEM_INSTRUCTION},
-                {"role": "user", "content": query},
-            ],
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-            add_generation_prompt=True,
-            tools=schemas,
-            enable_thinking=False,
-        ).to(model.device)
+        messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "user", "content": query},
+        ]
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
         prompt_length = inputs["input_ids"].shape[-1]
         with torch.inference_mode():
             generated = model.generate(**inputs, max_new_tokens=192, do_sample=False)
-        predictions.append(processor.tokenizer.decode(generated[0][prompt_length:], skip_special_tokens=False))
+        predictions.append(tokenizer.decode(generated[0][prompt_length:], skip_special_tokens=True))
         if index % 10 == 0:
             print(f"  evaluated {index}/{len(rows)} held-out prompts")
     model.train()
@@ -239,12 +232,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=ROOT / "campus_router_dataset_v2.jsonl")
     parser.add_argument("--model-id", default=DEFAULT_MODEL)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "kaggle_output")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "router_output")
     parser.add_argument("--epochs", type=float, default=2.0)
     parser.add_argument("--max-length", type=int, default=1024)
     parser.add_argument("--max-legacy-per-label", type=int, default=40)
-    parser.add_argument("--include-legacy", action="store_true", help="Add capped v1-derived training examples; not recommended until manually audited.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate and report the curated split without importing GPU libraries.")
+    parser.add_argument("--include-legacy", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     rows = read_rows(args.dataset)
@@ -261,78 +254,93 @@ def main() -> int:
     import torch
     from datasets import Dataset
     from peft import LoraConfig, prepare_model_for_kbit_training
-    from transformers import AutoModelForMultimodalLM, AutoProcessor, BitsAndBytesConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from trl import SFTConfig, SFTTrainer
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("No CUDA GPU found. Run this script in a Kaggle GPU notebook.")
-    if not hasattr(__import__("transformers"), "AutoModelForMultimodalLM"):
-        raise RuntimeError("Gemma 4 training requires a recent Transformers release (5.10.1+).")
+    has_cuda = torch.cuda.is_available()
+    if has_cuda:
+        print("🚀 GPU detected: Training with 4-bit QLoRA on CUDA.")
+        dtype = torch.float16  # FP16 for T4 GPU
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=dtype,
+            bnb_4bit_quant_storage=dtype,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_id,
+            quantization_config=quant_config,
+            torch_dtype=dtype,
+            device_map={"": torch.cuda.current_device()},
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+    else:
+        print("💻 No GPU detected: Running on CPU with float32 LoRA.")
+        dtype = torch.float32
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_id,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
 
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=dtype,
-        bnb_4bit_quant_storage=dtype,
-    )
-    processor = AutoProcessor.from_pretrained(args.model_id)
-    model = AutoModelForMultimodalLM.from_pretrained(
-        args.model_id,
-        quantization_config=quant_config,
-        dtype=dtype,
-        device_map={"": torch.cuda.current_device()},
-        low_cpu_mem_usage=True,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     model.config.use_cache = False
-    print("Running base-model generation evaluation on the curated held-out split…")
-    base_predictions = generate_predictions(model, processor, eval_rows, schemas)
+
+    print("Running base-model generation evaluation on the curated held-out split...")
+    base_predictions = generate_predictions(model, tokenizer, eval_rows, schemas)
     base_metrics = score_predictions(eval_rows, base_predictions)
     print("Base model exact tool accuracy:", base_metrics["overall"]["tool_accuracy"])
-    model.train()
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
-    train_data = []
-    for row in train_rows:
-        messages, row_schemas = _messages(row, schemas)
-        train_data.append({"messages": messages, "tools": row_schemas})
-    eval_data = []
-    for row in eval_rows:
-        messages, row_schemas = _messages(row, schemas)
-        eval_data.append({"messages": messages, "tools": row_schemas})
-    train_ds = Dataset.from_list(train_data, on_mixed_types="use_json")
-    eval_ds = Dataset.from_list(eval_data, on_mixed_types="use_json")
+    model.train()
+    if has_cuda:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        # Cast any stray BF16 trainable params → FP16 for T4 AMP scaler compatibility
+        for _n, _p in model.named_parameters():
+            if _p.requires_grad and _p.dtype == torch.bfloat16:
+                _p.data = _p.data.to(torch.float16)
+
+    train_data = [{"messages": _messages(row)} for row in train_rows]
+    eval_data  = [{"messages": _messages(row)} for row in eval_rows]
+    train_ds = Dataset.from_list(train_data)
+    eval_ds  = Dataset.from_list(eval_data)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     lora_config = LoraConfig(
         r=8,
         lora_alpha=16,
         lora_dropout=0.05,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         bias="none",
         task_type="CAUSAL_LM",
     )
+    warmup_kw = {"warmup_ratio": 0.05} if "warmup_ratio" in getattr(SFTConfig, "__dataclass_fields__", {}) else {"warmup_steps": 0.05}
     train_config = SFTConfig(
         output_dir=str(args.output_dir),
         num_train_epochs=args.epochs,
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=1 if has_cuda else 2,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=8,
-        learning_rate=1e-4,
-        warmup_ratio=0.05,
+        gradient_accumulation_steps=8 if has_cuda else 4,
+        learning_rate=1e-4 if has_cuda else 2e-4,
+        **warmup_kw,
         lr_scheduler_type="cosine",
         logging_steps=5,
         eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
-        max_length=args.max_length,
-        assistant_only_loss=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        fp16=dtype == torch.float16,
-        bf16=dtype == torch.bfloat16,
-        optim="paged_adamw_8bit",
+        max_length=min(args.max_length, 512) if not has_cuda else args.max_length,
+        assistant_only_loss=False,
+        gradient_checkpointing=has_cuda,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if has_cuda else None,
+        fp16=has_cuda,
+        bf16=False,
+        optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
         report_to="none",
         seed=SEED,
         data_seed=SEED,
@@ -342,15 +350,16 @@ def main() -> int:
         args=train_config,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        processing_class=processor.tokenizer,
+        processing_class=tokenizer,
         peft_config=lora_config,
     )
     trainer.train()
-    print("Running fine-tuned generation evaluation on the same held-out split…")
-    tuned_predictions = generate_predictions(trainer.model, processor, eval_rows, schemas)
+
+    print("Running fine-tuned generation evaluation on the same held-out split...")
+    tuned_predictions = generate_predictions(trainer.model, tokenizer, eval_rows, schemas)
     tuned_metrics = score_predictions(eval_rows, tuned_predictions)
     trainer.save_model(str(args.output_dir / "adapter"))
-    processor.save_pretrained(args.output_dir / "adapter")
+    tokenizer.save_pretrained(args.output_dir / "adapter")
 
     report = {
         "base_model": args.model_id,
@@ -358,13 +367,11 @@ def main() -> int:
         "epochs": args.epochs,
         "training_examples": len(train_rows),
         "held_out_examples": len(eval_rows),
-        "training_sources": dict(Counter(row.get("source", "") for row in train_rows)),
-        "held_out_source": "curated_seed only",
         "base_metrics": base_metrics,
         "fine_tuned_metrics": tuned_metrics,
-        "note": "This script saves an adapter. The adapter is not wired into the app's Ollama endpoint.",
     }
     (args.output_dir / "training_manifest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
     with (args.output_dir / "held_out_predictions.jsonl").open("w", encoding="utf-8") as output:
         for row, base_text, tuned_text in zip(eval_rows, base_predictions, tuned_predictions):
             base_tool, base_arguments, _ = parse_router_output(base_text, REQUIRED_TOOLS)
@@ -374,11 +381,10 @@ def main() -> int:
                 "expected": {"tool": row.get("tool"), "arguments": row.get("arguments") or {}},
                 "base_prediction": {"tool": base_tool, "arguments": base_arguments},
                 "fine_tuned_prediction": {"tool": tuned_tool, "arguments": tuned_arguments},
-                "base_raw_output": base_text,
-                "fine_tuned_raw_output": tuned_text,
             }, ensure_ascii=False) + "\n")
-    print("Base exact tool/argument accuracy:", base_metrics["overall"]["exact_tool_and_arguments"])
-    print("Fine-tuned exact tool/argument accuracy:", tuned_metrics["overall"]["exact_tool_and_arguments"])
+
+    print("Base exact tool accuracy:", base_metrics["overall"]["tool_accuracy"])
+    print("Fine-tuned exact tool accuracy:", tuned_metrics["overall"]["tool_accuracy"])
     print(f"Saved adapter and manifest in {args.output_dir}")
     return 0
 
