@@ -108,15 +108,23 @@ MACH_AI/
 │   │   └── http_client.py         # Shared httpx client & GPU concurrency semaphore
 │   ├── services/
 │   │   ├── rag_orchestrator.py    # Multi-turn history, hybrid RRF retrieval, Gemma 4 streaming
-│   │   ├── graph_service.py       # Neo4j Cypher queries, topic/course lookup, CRAG expansion
+│   │   ├── graph_service.py       # Neo4j Cypher queries, contrasting subtopic isolation, topic/course lookup
+│   │   ├── academic_document_qa_service.py # Scoped retrieval for exam schedules, seating, and lab timetables
+│   │   ├── calendar_qa_service.py # Institutional academic calendar QA (milestones, class days, holidays)
+│   │   ├── regulation_service.py  # B.Tech Academic Regulations 2023 QA with citation verification
+│   │   ├── timetable_directory.py # Course faculty and venue directory from class timetables
 │   │   ├── embedding_service.py   # Batched text & multimodal embeddinggemma-2 caller + LRU cache
-│   │   ├── topic_mapper.py        # Title-alias resolution, semantic + VLM topic mapper
+│   │   ├── topic_mapper.py        # Title-alias resolution, calibrated question-topic mapper
 │   │   └── storage_service.py     # Cloudinary upload with local /static/images fallback
 │   └── parsers/
-│       ├── pdf_classifier.py      # Auto-detects Syllabus vs PYQ PDFs + course title
+│       ├── pdf_classifier.py      # Auto-detects Syllabus, PYQ, Calendar, Regulations, Schedules
 │       ├── pyq_parser.py          # 2-pass bounding-box PYQ extractor (marks, BTL, CO, crops)
 │       ├── visual_cropper.py      # Selective high-res cropper, SSRF-safe loader & Gemma 4 VLM
-│       └── syllabus_parser.py     # 4-phase deterministic curriculum parser + <=1600-char chunks
+│       ├── syllabus_parser.py     # 4-phase deterministic curriculum parser + <=1600-char chunks
+│       ├── academic_documents_parser.py # Seating charts, mid-term/end-sem exam schedules, lab grids
+│       ├── calendar_parser.py     # Academic calendar tables into daily event records
+│       ├── regulations_parser.py  # Regulation clauses, section hierarchies, and cross-references
+│       └── timetable_parser.py    # Class timetable grids into slots, faculty, and room venues
 │
 ├── frontend/                      # Web UI portals served at /public
 │   ├── index.html                 # Unified login page
@@ -136,12 +144,19 @@ MACH_AI/
 │   ├── nginx/nginx.conf           # HTTPS reverse proxy & unbuffered SSE streaming for /chat
 │   └── systemd/ollama.service     # Managed Ollama systemd unit
 │
-├── tests/                         # Automated test suite (35 tests)
+├── tests/                         # Automated test suite (110 tests)
+│   ├── test_academic_document_qa.py
+│   ├── test_academic_tool_calling.py
+│   ├── test_calendar_restoration.py
 │   ├── test_embedder.py
-│   ├── test_intent_router.py
-│   ├── test_parsers_and_security.py
 │   ├── test_integration_neo4j.py
-│   └── test_security_auth.py
+│   ├── test_intent_router.py
+│   ├── test_lab_timetable_queries.py
+│   ├── test_parsers_and_security.py
+│   ├── test_regulation_grounding.py
+│   ├── test_security_auth.py
+│   ├── test_timetable_question_service.py
+│   └── test_topic_mapper.py
 │
 └── docs/                          # Research manuscript, inputs & test PDFs
     ├── MACH_IEEE_Paper.tex

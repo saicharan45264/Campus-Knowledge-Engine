@@ -13,16 +13,23 @@ import uuid
 logger = logging.getLogger("mach_ai.chat")
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.academic_tool_calling import (
+    fallback_academic_tool,
+    route_tool_call,
+    select_academic_tool,
+)
 from backend.api.auth import get_current_user
 from backend.core.guardrails import sanitize_retrieved_context, sanitize_student_query
 from backend.core.intent_router import classify_query_intent
 from backend.core.semantic_cache import semantic_cache
 from backend.core.telemetry import QueryLatencyTracker
-from backend.database import get_db, get_neo4j
+from backend.database import StudentAccount, get_db, get_neo4j
 from backend.parsers.visual_cropper import (
     _downscale_image_b64,
     describe_uploaded_image,
@@ -33,6 +40,8 @@ from backend.services.embedding_service import (
     format_query_embedding_text,
 )
 from backend.services.embedding_service import embed_text as get_embedding
+from backend.services.academic_document_qa_service import answer_academic_document_query
+from backend.services.academic_qa_service import answer_calendar_query, answer_timetable_query
 from backend.services.graph_service import (
     execute_graph_co_query,
     execute_graph_prereq_query,
@@ -53,6 +62,7 @@ from backend.services.rag_orchestrator import (
     hybrid_search_rrf,
     resolve_followup_search_query,
 )
+from backend.services.regulation_service import answer_regulations_query
 
 router = APIRouter(tags=["Chat & Tutoring"])
 
@@ -160,8 +170,88 @@ async def chat_endpoint(
             q_emb = await get_embedding(format_query_embedding_text(search_query))
         return q_emb
 
-    # 2. Intent Routing
+    # 2. Structured academic-document tools. The model chooses a registered
+    # operation and extracts query parameters; application services retrieve
+    # only database records. A bounded lexical dispatcher keeps these paths
+    # usable when the remote Ollama tunnel is unavailable.
     tracker.start_router()
+    tool_call = None
+    if not payload.image_b64:
+        from backend.academic_tool_calling import calendar_query_intent, exam_schedule_query_intent, seating_query_intent
+        from backend.services.regulation_service import is_regulation_query
+        from backend.services.timetable_directory import is_timetable_directory_query
+        if re.search(r"\b(lab(?:oratory)?|it\s*lab)\b", search_query, re.I) and not re.search(r"\b(exam|examination|seating|exam\s+hall)\b", search_query, re.I):
+            tool_call = {"name": "lookup_lab_schedule", "arguments": {"lab_identifier": "IT Lab-I"}}
+        elif seating_query_intent(search_query):
+            tool_call = {"name": "lookup_exam_seating", "arguments": {}}
+        elif is_regulation_query(search_query):
+            tool_call = {"name": "lookup_academic_regulations", "arguments": {}}
+        elif exam_schedule_query_intent(search_query):
+            tool_call = {"name": "lookup_exam_schedule", "arguments": {"exam_type": "mid_term" if re.search(r"\bmid\s*(?:term|sem)|midterm\b", search_query, re.I) else "end_sem" if re.search(r"\b(end\s*sem(?:ester)?|endsem|final exam)\b", search_query, re.I) else "all"}}
+        elif calendar_query_intent(search_query):
+            tool_call = {"name": "lookup_academic_calendar", "arguments": {}}
+        elif is_timetable_directory_query(search_query) or (re.search(r"\bschedule\b", search_query, re.I) and re.search(r"\b(section|monday|tuesday|wednesday|thursday|friday)\b", search_query, re.I)) or (re.search(r"\b(class|classes|timetable|slots?|free periods?|vacant periods?|mentoring|CIR|project phase|lectures?)\b", search_query, re.I) and not re.search(r"\b(exam|exams|examination|holiday|calendar|regulation)\b", search_query, re.I)):
+            tool_call = {"name": "lookup_class_timetable", "arguments": {}}
+        else:
+            tool_call = await select_academic_tool(search_query)
+        if tool_call is None:
+            tool_call = fallback_academic_tool(search_query)
+    routed = route_tool_call(search_query, tool_call) if tool_call else None
+    if routed:
+        intent, structured_query = routed
+        tracker.end_router(intent)
+        tracker.start_retrieval()
+        profile_result = await db.execute(
+            select(StudentAccount).where(StudentAccount.college_email == (user.get("username") or "").strip().lower())
+        )
+        profile = profile_result.scalar_one_or_none()
+        try:
+            tool_name = tool_call.get("name")
+            if intent == "CALENDAR_LOOKUP":
+                from backend.services.calendar_qa_service import answer_calendar_query as restored_calendar_query
+                result_data = await restored_calendar_query(
+                    structured_query,
+                    db,
+                    semester=profile.semester if profile else None,
+                )
+            elif intent == "TIMETABLE_LOOKUP":
+                result_data = await answer_timetable_query(
+                    structured_query,
+                    db,
+                    department=profile.department if profile else "",
+                    semester=profile.semester if profile else "",
+                    section=profile.section if profile else "",
+                )
+            elif intent == "ACADEMIC_DOCUMENT_LOOKUP":
+                result_data = await answer_academic_document_query(
+                    structured_query,
+                    db,
+                    department=profile.department if profile else "",
+                    semester=profile.semester if profile else "",
+                    student_roll_number=profile.roll_number if profile else None,
+                )
+            else:
+                result_data = await answer_regulations_query(structured_query, db)
+            result_data = result_data or {"markdown_answer": "No matching academic records were found."}
+        except Exception:
+            logger.exception("Structured academic lookup failed | intent=%s tool=%s", intent, tool_name)
+            result_data = {"markdown_answer": "I couldn't retrieve the requested academic record right now. Please retry; the server log contains the retrieval error."}
+
+        tracker.end_retrieval("structured_academic_lookup", hit_count=len(result_data.get("records") or result_data.get("events") or result_data.get("clauses") or []))
+        tracker.log_background()
+        response_data = {
+            "type": "academic_result",
+            "intent": intent,
+            "query": question,
+            **result_data,
+        }
+        append_session_message(session_id, "assistant", result_data.get("markdown_answer") or "")
+        return JSONResponse(
+            content=jsonable_encoder(response_data),
+            headers={"X-Response-Type": "academic_result", "X-Message-ID": message_id},
+        )
+
+    # 3. Existing graph and general RAG paths.
     intent = await classify_query_intent(search_query, query_embedding=q_emb)
     tracker.end_router(intent)
 

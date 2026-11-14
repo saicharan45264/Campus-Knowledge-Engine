@@ -83,11 +83,40 @@ window.fileSelected = fileSelected;
 
 export function docTypeChanged() {
   const docType = document.getElementById('doc-type').value;
-  document.getElementById('course-code-field').style.display = docType === 'pyq' ? 'block' : 'none';
-  document.getElementById('dept-field').style.display = docType === 'syllabus' ? 'block' : 'none';
-  document.getElementById('year-field').style.display = docType === 'syllabus' ? 'block' : 'none';
+  const visible = id => { document.getElementById(id).style.display = 'block'; };
+  const hidden = id => { document.getElementById(id).style.display = 'none'; };
+  const needsDept = ['syllabus', 'pyq', 'timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
+  const needsYear = ['syllabus', 'pyq', 'timetable'].includes(docType);
+  const needsSemester = ['timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
+  const needsCourse = docType === 'pyq';
+  const needsSection = docType === 'timetable';
+
+  const allDepartmentsOption = document.querySelector('#dept option[data-combined-scope="all"]');
+  const departmentHelp = document.getElementById('dept-scope-help');
+  const supportsCombinedScope = ['exam_schedule', 'seating_arrangement'].includes(docType);
+  if (allDepartmentsOption) {
+    allDepartmentsOption.hidden = !supportsCombinedScope;
+    allDepartmentsOption.disabled = !supportsCombinedScope;
+    if (!supportsCombinedScope && document.getElementById('dept').value === 'ALL') {
+      document.getElementById('dept').value = '';
+    }
+  }
+  if (departmentHelp) departmentHelp.style.display = supportsCombinedScope ? 'block' : 'none';
+
+  (needsDept ? visible : hidden)('dept-field');
+  (needsYear ? visible : hidden)('year-field');
+  (needsCourse ? visible : hidden)('course-code-field');
+  (needsCourse ? visible : hidden)('course-name-field');
+  (needsSemester ? visible : hidden)('semester-field');
+  (needsSection ? visible : hidden)('section-field');
+  const yearLabel = document.getElementById('year-label');
+  if (yearLabel) yearLabel.textContent = docType === 'timetable' ? 'Academic Year *' : 'Academic Year / Batch *';
 }
 window.docTypeChanged = docTypeChanged;
+document.getElementById('dept').addEventListener('change', event => {
+  const isOther = event.target.value === '__other__';
+  document.getElementById('dept-other').style.display = isOther ? 'block' : 'none';
+});
 
 function setProg(pct, label) {
   document.getElementById('prog-fill').style.width = pct + '%';
@@ -102,19 +131,29 @@ export async function doUpload() {
   const fileInput = document.getElementById('file-input');
   const files = fileInput._droppedFiles || fileInput.files;
 
-  let code = '';
-  let dept = '';
-  let year = '';
-
-  if (docType === 'pyq') {
-    code = document.getElementById('course-code').value.trim();
-  } else if (docType === 'syllabus') {
-    dept = document.getElementById('dept').value.trim();
-    year = document.getElementById('year').value.trim();
-  }
+  const deptValue = document.getElementById('dept').value;
+  const dept = (deptValue === '__other__' ? document.getElementById('dept-other').value : deptValue).trim().toUpperCase();
+  const year = document.getElementById('year').value.trim();
+  const code = document.getElementById('course-code').value.trim().toUpperCase();
+  const courseName = document.getElementById('course-name').value.trim();
+  const semester = document.getElementById('semester').value;
+  const section = document.getElementById('section').value.trim().toUpperCase();
 
   if (!files || files.length === 0) {
     return shakeField('dropzone');
+  }
+
+  const needsDept = ['syllabus', 'pyq', 'timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
+  const needsYear = ['syllabus', 'pyq', 'timetable'].includes(docType);
+  const needsCourse = docType === 'pyq';
+  const needsSemester = ['timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
+  const needsSection = docType === 'timetable';
+  const missing = (needsDept && !dept) || (needsYear && !year) || (needsCourse && (!code || !courseName)) || (needsSemester && !semester) || (needsSection && !section);
+  if (missing) {
+    const errMsg = document.getElementById('upload-error-msg');
+    errMsg.textContent = 'Complete the required document scope fields before uploading.';
+    document.getElementById('upload-error').classList.add('show');
+    return;
   }
 
   const btn = document.getElementById('upload-btn');
@@ -130,8 +169,11 @@ export async function doUpload() {
     }
     formData.append('doc_type', docType);
     if (code) formData.append('course_code', code);
+    if (courseName) formData.append('course_name', courseName);
     if (dept) formData.append('department', dept);
     if (year) formData.append('year', year);
+    if (semester) formData.append('semester', semester);
+    if (section) formData.append('section', section);
 
     btn.textContent = `Uploading ${files.length} document(s)…`;
     
@@ -214,7 +256,10 @@ function shakeField(id) {
 export async function fetchDocuments() {
   const tbody = document.getElementById('documents-table-body');
   try {
-    const res = await apiFetch('/documents');
+    await loadDepartmentOptions();
+    const selectedDepartment = document.getElementById('department-filter')?.value || '';
+    const query = selectedDepartment ? `?department=${encodeURIComponent(selectedDepartment)}` : '';
+    const res = await apiFetch(`/documents${query}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const docs = await res.json();
 
@@ -233,8 +278,11 @@ export async function fetchDocuments() {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
           ${escapeHtml(doc.details || 'Completed')}
         </span>`;
+      } else if (doc.status === 'partial') {
+        statusBadge = `<span style="color:#b45309;background:#fef3c7;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;">${escapeHtml(doc.details || 'Partially indexed')}</span>`;
       } else if (doc.status === 'error') {
-        statusBadge = `<span style="color:#b91c1c;background:#fee2e2;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;">Failed</span>`;
+        const details = escapeHtml(doc.details || 'Ingestion failed');
+        statusBadge = `<span title="${details}" style="color:#b91c1c;background:#fee2e2;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;">${details}</span>`;
       } else {
         hasProcessing = true;
         statusBadge = `<span style="color:#b45309;background:#fef3c7;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:4px;">
@@ -245,12 +293,15 @@ export async function fetchDocuments() {
 
       return `
         <tr>
-          <td><strong>${escapeHtml(doc.course_code || '—')}</strong></td>
+          <td><strong>${escapeHtml(doc.course_code || doc.department || '—')}</strong>${doc.course_name ? `<div style="font-size:11px;color:var(--text-3);">${escapeHtml(doc.course_name)}</div>` : ''}${doc.semester ? `<div style="font-size:11px;color:var(--text-3);">Sem ${escapeHtml(doc.semester)}${doc.section ? ` · ${escapeHtml(doc.section)}` : ''}</div>` : ''}</td>
           <td><span class="doc-type-badge">${escapeHtml(doc.doc_type || '—')}</span></td>
           <td style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;">${escapeHtml(doc.filename || '—')}</td>
           <td>${statusBadge}</td>
           <td style="font-size:11.5px;color:var(--text-3);">${doc.created_at ? new Date(doc.created_at).toLocaleDateString() : '—'}</td>
-          <td><button class="btn-del" onclick="window.deleteDocument('${escapeHtml(doc.id)}')">Delete</button></td>
+          <td style="white-space:nowrap;">
+            ${doc.doc_type === 'lab_timetable' ? `<button class="btn-del" style="margin-right:6px;" onclick="window.reprocessDocument('${escapeHtml(doc.id)}')">Reprocess</button>` : ''}
+            <button class="btn-del" onclick="window.deleteDocument('${escapeHtml(doc.id)}')">Delete</button>
+          </td>
         </tr>`;
     }).join('');
 
@@ -262,6 +313,23 @@ export async function fetchDocuments() {
   }
 }
 window.fetchDocuments = fetchDocuments;
+
+let departmentOptionsLoaded = false;
+async function loadDepartmentOptions() {
+  const select = document.getElementById('department-filter');
+  if (!select || departmentOptionsLoaded) return;
+  try {
+    const response = await apiFetch('/documents/departments');
+    if (!response.ok) return;
+    const departments = await response.json();
+    const current = select.value;
+    select.innerHTML = '<option value="">All departments</option>' + departments.map(dept => `<option value="${escapeHtml(dept)}">${escapeHtml(dept)}</option>`).join('');
+    select.value = current;
+    departmentOptionsLoaded = true;
+  } catch (error) {
+    console.warn('[Admin] Department filter options unavailable:', error);
+  }
+}
 
 export async function deleteDocument(id) {
   if (!confirm('Delete this document and its extracted data?')) return;
@@ -278,6 +346,19 @@ export async function deleteDocument(id) {
   }
 }
 window.deleteDocument = deleteDocument;
+
+export async function reprocessDocument(id) {
+  try {
+    const res = await apiFetch(`/documents/${encodeURIComponent(id)}/reprocess`, { method: 'POST' });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.detail || `Reprocess failed (HTTP ${res.status})`);
+    showToast('Lab timetable reprocessing queued.', 'success');
+    fetchDocuments();
+  } catch (error) {
+    showToast(error.message || 'Could not queue lab timetable reprocessing.', 'error');
+  }
+}
+window.reprocessDocument = reprocessDocument;
 
 let evalChartInstance = null;
 
@@ -444,6 +525,6 @@ window.logout = logout;
 
 window.addEventListener('DOMContentLoaded', () => {
   docTypeChanged();
-  fetchDocuments();
+  fetchDocuments().then(hasPending => { if (hasPending) startPollingStatus(); });
   loadEvalChart();
 });

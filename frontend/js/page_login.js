@@ -23,7 +23,7 @@ async function doLogin(roleHint) {
     const form = new URLSearchParams();
     form.append('username', u);
     form.append('password', p);
-    form.append('role', roleHint);
+    if (roleHint) form.append('role', roleHint);
 
     const res = await fetch(`${API_BASE}/login`, {
       method: 'POST',
@@ -33,7 +33,7 @@ async function doLogin(roleHint) {
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      errEl.textContent = data.detail || 'Invalid credentials.';
+      errEl.textContent = res.status >= 500 ? 'Sign-in is temporarily unavailable. Please check the backend.' : (data.detail || 'Unable to sign in.');
       document.getElementById('auth-user').style.borderColor = 'var(--brand)';
       setTimeout(() => document.getElementById('auth-user').style.borderColor = '', 1400);
       return;
@@ -42,7 +42,7 @@ async function doLogin(roleHint) {
     const data = await res.json();
     const payload = decodeJwtPayload(data.access_token);
     const role = data.role || payload.role;
-    if (role !== roleHint) {
+    if (roleHint && role !== roleHint) {
       errEl.textContent = `Please use the ${role === 'admin' ? 'Admin' : 'Student'} button to sign in with this account.`;
       return;
     }
@@ -60,8 +60,60 @@ async function doLogin(roleHint) {
 
 window.doLogin = doLogin;
 
+export function toggleAuthMode() {
+  const registration = document.getElementById('student-registration');
+  const login = document.getElementById('login-form-fields');
+  const toggle = document.getElementById('auth-mode-toggle');
+  const isRegistering = registration.style.display === 'none';
+  registration.style.display = isRegistering ? 'block' : 'none';
+  login.style.display = isRegistering ? 'none' : 'block';
+  toggle.textContent = isRegistering ? 'Already registered? Sign in' : 'New student? Create an account';
+  document.querySelector('.login-card-header h2').textContent = isRegistering ? 'Create your student account' : 'Sign in to MACH AI';
+}
+window.toggleAuthMode = toggleAuthMode;
+
+export async function registerStudent() {
+  const errorEl = document.getElementById('registration-error');
+  const button = document.getElementById('btn-register');
+  errorEl.textContent = '';
+  const payload = {
+    full_name: document.getElementById('reg-name').value.trim(),
+    college_email: document.getElementById('reg-email').value.trim(),
+    password: document.getElementById('reg-password').value,
+    age: Number(document.getElementById('reg-age').value),
+    gender: document.getElementById('reg-gender').value.trim(),
+    roll_number: document.getElementById('reg-roll').value.trim(),
+    department: document.getElementById('reg-department').value.trim().toUpperCase(),
+    study_year: document.getElementById('reg-study-year').value,
+    academic_year: document.getElementById('reg-academic-year').value.trim(),
+    semester: document.getElementById('reg-semester').value,
+    section: document.getElementById('reg-section').value.trim().toUpperCase(),
+  };
+  if (Object.values(payload).some(value => value === '' || value === 0 || Number.isNaN(value))) {
+    errorEl.textContent = 'Complete every field to create your student profile.';
+    return;
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Account registration failed.');
+    setAuth(data.access_token, 'student', data.username || payload.college_email);
+    window.location.href = 'student.html';
+  } catch (error) {
+    errorEl.textContent = error.message || 'Could not create the account.';
+  } finally {
+    button.disabled = false;
+  }
+}
+window.registerStudent = registerStudent;
+
 document.getElementById('auth-pass').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doLogin('student');
+  if (e.key === 'Enter') { e.preventDefault(); doLogin(null); }
 });
 
 // Clear stale token on login page load

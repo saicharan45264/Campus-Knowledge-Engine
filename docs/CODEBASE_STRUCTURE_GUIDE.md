@@ -21,6 +21,7 @@ MACH_AI/
 │
 ├── backend/
 │   ├── __init__.py
+│   ├── academic_tool_calling.py        # Fine-tuned or bounded lexical tool selection for academic documents
 │   ├── main.py                         # FastAPI application entrypoint, lifespan hooks, CORS, routes
 │   ├── config.py                       # Pydantic Settings management (.env parsing, model parameters)
 │   ├── database.py                     # Polyglot connections: Async PostgreSQL + Neo4j Bolt driver
@@ -42,17 +43,29 @@ MACH_AI/
 │   │
 │   ├── services/                       # Business Logic & Data Orchestration
 │   │   ├── __init__.py
+│   │   ├── academic_document_qa_service.py # Scoped retrieval for exam schedules, seating plans, and lab timetables
+│   │   ├── academic_qa_service.py      # Unified QA service across academic administrative documents
+│   │   ├── calendar_qa_service.py      # Institutional academic calendar QA service (milestones, class days, holidays)
+│   │   ├── date_resolution.py          # Calendar date parsing and relative date resolution
+│   │   ├── document_ingestion.py       # Asynchronous ingestion pipeline coordinator for all document types
+│   │   ├── embedding_service.py        # Local Ollama embedding interface (embeddinggemma-2)
 │   │   ├── graph_service.py            # Neo4j Cypher traversals (curriculum, prerequisites, PYQ mappings)
 │   │   ├── rag_orchestrator.py         # Multi-turn conversational memory & hybrid RAG prompt assembly
-│   │   ├── embedding_service.py        # Local Ollama embedding interface (embeddinggemma-2)
+│   │   ├── regulation_service.py       # Amrita B.Tech Academic Regulations QA service (clauses, citations)
+│   │   ├── schedule_service.py         # Examination schedule and slot lookup service
 │   │   ├── storage_service.py          # File system management for uploaded PDFs and image crops
+│   │   ├── timetable_directory.py      # Course faculty and room directory from class timetables
 │   │   └── topic_mapper.py             # Semantic mapping between exam questions and syllabus topics
 │   │
 │   └── parsers/                        # Document Extraction & Transformation Pipelines
 │       ├── __init__.py
+│       ├── academic_documents_parser.py # Seating arrangements, end-sem/mid-term exam schedules, lab timetables
+│       ├── calendar_parser.py          # Institutional academic calendar table parser
 │       ├── pdf_classifier.py           # Discriminator identifying Syllabus vs Question Paper (PYQ)
-│       ├── syllabus_parser.py          # Hierarchical syllabus parser (Units, Topics, Outcomes, Books)
 │       ├── pyq_parser.py               # Exam paper parser (Questions, Marks, BTL levels, CO tags)
+│       ├── regulations_parser.py       # B.Tech regulations parser (clauses, conditions, cross-references)
+│       ├── syllabus_parser.py          # Hierarchical syllabus parser (Units, Topics, Outcomes, Books)
+│       ├── timetable_parser.py         # Class timetable grid parser (slots, batches, faculty, venues)
 │       └── visual_cropper.py           # Multimodal diagram extractor and visual bounding box cropper
 │
 ├── frontend/
@@ -89,13 +102,20 @@ MACH_AI/
 │       ├── favicon-32x32.png           # Desktop browser tab icon
 │       └── favicon-16x16.png           # Compact browser tab icon
 │
-├── tests/                              # Comprehensive Test Suite
+├── tests/                              # Comprehensive Test Suite (110 Tests)
 │   ├── __init__.py
+│   ├── test_academic_document_qa.py    # Exam seating plans, hall allocations, and schedule filter tests
+│   ├── test_academic_tool_calling.py   # Fine-tuned & lexical tool dispatcher tests
+│   ├── test_calendar_restoration.py    # Academic calendar milestones, cohort class days, and holiday tests
+│   ├── test_embedder.py                # Embedding vector dimensionality, task prefix, and format tests
+│   ├── test_integration_neo4j.py       # Live Neo4j property graph traversal and merge tests
 │   ├── test_intent_router.py           # Intent classification, typo handling, aspect extraction tests
+│   ├── test_lab_timetable_queries.py   # IT Lab and laboratory timetable slot allocation tests
 │   ├── test_parsers_and_security.py    # PDF parsing integrity, regex extraction, guardrail injection tests
+│   ├── test_regulation_grounding.py    # B.Tech Academic Regulations citation grounding and traversal tests
 │   ├── test_security_auth.py           # Bcrypt hashing, JWT token expiry, role-based endpoint security
-│   ├── test_integration_neo4j.py       # Live Neo4j property graph traversal tests
-│   └── test_embedder.py                # Embedding vector dimensionality and format tests
+│   ├── test_timetable_question_service.py # Class timetable directory, faculty venue, and free period tests
+│   └── test_topic_mapper.py            # Question-to-syllabus semantic mapping and status calibration tests
 │
 ├── deploy/                             # Production Infrastructure Configurations
 │   ├── nginx/
@@ -140,16 +160,24 @@ MACH_AI/
 - **`backend/core/telemetry.py`**: `QueryLatencyTracker` measuring routing, retrieval, and generation latencies for every incoming student request.
 
 #### 4. Business Services (`backend/services/`)
-- **`backend/services/graph_service.py`**: Executes deterministic Cypher queries on Neo4j for course syllabus units, textbooks, references, evaluation pattern ratios, and multi-hop prerequisite chains.
-- **`backend/services/rag_orchestrator.py`**: Resolves bare follow-up queries using conversation history (e.g., carrying over course context like `23CSE331` for bare prompts like `unit 3 and references`).
-- **`backend/services/embedding_service.py`**: Interacts with Ollama embedding API (`embeddinggemma-2`). Handles batch embeddings and dimension validation.
+- **`backend/services/graph_service.py`**: Executes deterministic Cypher queries on Neo4j for course syllabus units, textbooks, references, evaluation pattern ratios, and multi-hop prerequisite chains. Features contrasting subtopic isolation (Mesh vs Nodal, $R$ vs $C$ vs $L$ circuits).
+- **`backend/services/rag_orchestrator.py`**: Resolves bare follow-up queries using conversation history, executes hybrid RRF search (dense pgvector halfvec + sparse tsquery), and streams model tokens.
+- **`backend/services/academic_document_qa_service.py`**: Scoped retrieval for examination schedules (mid-term, end-semester), seating allocations by roll number/hall, and laboratory batch schedules.
+- **`backend/services/calendar_qa_service.py`**: Authoritative Institutional Academic Calendar queries covering cohort class-day counts, holidays, timetable day substitutions, and milestones.
+- **`backend/services/regulation_service.py`**: B.Tech Academic Regulations 2023 QA service with clause hierarchy traversal, condition preservation, and citation verification.
+- **`backend/services/timetable_directory.py`**: Course faculty and venue directory extracted from weekly class timetables.
+- **`backend/services/embedding_service.py`**: Interacts with Ollama embedding API (`embeddinggemma-2`). Handles batch embeddings, task prefixes (`task: search query | query: ...`), and dimension validation.
 - **`backend/services/storage_service.py`**: Manages file storage for uploaded PDFs and extracted visual diagram crops.
-- **`backend/services/topic_mapper.py`**: Matches exam questions to syllabus topics using semantic vector cosine similarity.
+- **`backend/services/topic_mapper.py`**: Maps past exam questions to syllabus topics with calibrated statuses (`mapped`, `provisional`, `unmapped`).
 
 #### 5. Parsers (`backend/parsers/`)
-- **`backend/parsers/pdf_classifier.py`**: Analyzes document contents to classify uploaded files as either a syllabus curriculum or past exam question paper.
+- **`backend/parsers/pdf_classifier.py`**: Analyzes document contents to classify uploaded files as syllabus, PYQ, calendar, regulation, exam schedule, seating plan, or timetable.
 - **`backend/parsers/syllabus_parser.py`**: Parses academic curricula extracting course codes, titles, L-T-P-C credits, units, topics, outcomes, evaluation patterns, and textbooks.
 - **`backend/parsers/pyq_parser.py`**: Parses past examination papers extracting individual questions, sub-parts, maximum marks, Bloom's Taxonomy Levels (BTL 1–6), and Course Outcomes (CO1–CO6).
+- **`backend/parsers/academic_documents_parser.py`**: Extracts tabular data from seating charts, mid-term/end-sem examination schedules, and laboratory schedules.
+- **`backend/parsers/calendar_parser.py`**: Parses academic calendar tables into chronological calendar day records with status tags and timetable overrides.
+- **`backend/parsers/regulations_parser.py`**: Parses academic regulation clauses, section hierarchies, conditions, and clause cross-references.
+- **`backend/parsers/timetable_parser.py`**: Parses department class timetables into section grids, time slots, course assignments, and classroom venues.
 - **`backend/parsers/visual_cropper.py`**: Identifies diagrams, circuits, and figures in exam papers using PyMuPDF vector drawing detection, crops them as PNG images, and binds them to Neo4j Question nodes.
 
 #### 6. Frontend Layer (`frontend/`)

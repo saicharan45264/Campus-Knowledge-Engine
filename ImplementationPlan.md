@@ -12,12 +12,13 @@
 | **Vector Store** | PostgreSQL `pgvector` upgraded to `HALFVEC(768)` HNSW (`halfvec_cosine_ops`) + GIN full-text search + re-embedding utility | High | Completed |
 | **VLIL Multimodal** | `embeddinggemma-2:latest` unified text+image embeddings & `gemma4:12b-it-qat` 1024px diagram analysis | High | Completed |
 | **PYQ & Topic Mapping** | 2-pass PyMuPDF cropper, course-title alias resolver (e.g. `23CSE104` -> `23EEE104`), topic-strict retrieval & multi-turn carryover | High | Completed |
-| **Security & Linking** | Bcrypt auth, RBAC guards, SSRF/path-traversal checks, XSS escaping, image payload validation, frontend-backend parity & 35 tests | Critical | Completed |
+| **Academic Document QA** | Scoped lookups for exam seating by roll number, mid-term/end-sem dates, timetable faculty directory, academic calendar milestones, and B.Tech regulations | High | Completed |
+| **Security & Linking** | Bcrypt auth, RBAC guards, SSRF/path-traversal checks, XSS escaping, image payload validation, frontend-backend parity & 110 tests | Critical | Completed |
 | **Containerization** | Full-stack Docker Compose (`postgres`, `neo4j`, `backend`) with clean `.dockerignore` & non-baked `.env` | High | Completed |
 | **Reverse Proxy (HTTPS)** | Campus edge HTTPS via `deploy/nginx/nginx.conf` for Web Speech microphone & unbuffered SSE | Critical | Ready for Server Deploy |
 | **Ollama Systemd Daemon** | Managed `deploy/systemd/ollama.service` for 24x7 local model serving on GPU server | High | Ready for Server Deploy |
 | **Nightly Backups** | Automated PostgreSQL & Neo4j dumps using `scripts/backup_databases.sh` with 14-day retention | Medium | Ready for Server Deploy |
-| **Campus Data Expansion** | Ingest remaining B.Tech stream syllabi, academic calendars, regulations, lab allocations, and PYQ sets | Medium | Upcoming |
+| **Campus Data Expansion** | Ingest remaining B.Tech stream syllabi, academic calendars, regulations, lab allocations, and PYQ sets | Medium | In Progress |
 
 ---
 

@@ -62,6 +62,7 @@
           <h2>Sign in to MACH AI</h2>
         </div>
       </div>
+      <div id="login-form-fields">
       <div class="form-group">
         <label>Username</label>
         <input type="text" id="auth-user" placeholder="Enter your username" autocomplete="username">
@@ -81,6 +82,24 @@
           Admin
         </button>
       </div>
+      </div>
+
+      <div id="student-registration" style="display:none;">
+        <div class="form-group"><label>Full name</label><input id="reg-name" autocomplete="name" placeholder="Your full name"></div>
+        <div class="form-group"><label>College email</label><input id="reg-email" type="email" autocomplete="email" placeholder="name@college.edu"></div>
+        <div class="form-group"><label>Password</label><input id="reg-password" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>
+        <div class="form-group"><label>Age</label><input id="reg-age" type="number" min="15" max="100" placeholder="Age"></div>
+        <div class="form-group"><label>Gender</label><input id="reg-gender" placeholder="Gender"></div>
+        <div class="form-group"><label>Roll number</label><input id="reg-roll" placeholder="College register number"></div>
+        <div class="form-group"><label>Department</label><input id="reg-department" list="student-departments" placeholder="e.g. CSE"><datalist id="student-departments"><option value="CSE"><option value="ECE"><option value="EEE"><option value="MECH"><option value="AIE"><option value="CYS"></datalist></div>
+        <div class="form-group"><label>Study year</label><select id="reg-study-year"><option value="">Select year</option><option>First year</option><option>Second year</option><option>Third year</option><option>Fourth year</option></select></div>
+        <div class="form-group"><label>Admission batch / academic year</label><input id="reg-academic-year" placeholder="e.g. 2023"></div>
+        <div class="form-group"><label>Semester</label><select id="reg-semester"><option value="">Select semester</option><option>I</option><option>II</option><option>III</option><option>IV</option><option>V</option><option>VI</option><option>VII</option><option>VIII</option></select></div>
+        <div class="form-group"><label>Class / section</label><input id="reg-section" placeholder="e.g. F"></div>
+        <div class="auth-error" id="registration-error"></div>
+        <button class="btn btn-primary" id="btn-register" onclick="window.registerStudent()">Create student account</button>
+      </div>
+      <button type="button" id="auth-mode-toggle" class="auth-mode-toggle" onclick="window.toggleAuthMode()">New student? Create an account</button>
     </div>
   </div>
 
