@@ -220,7 +220,7 @@ def generate_predictions(model: Any, tokenizer: Any, rows: list[dict[str, Any]],
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         prompt_length = inputs["input_ids"].shape[-1]
         with torch.inference_mode():
-            generated = model.generate(**inputs, max_new_tokens=192, do_sample=False)
+            generated = model.generate(**inputs, max_new_tokens=192, do_sample=False, pad_token_id=tokenizer.pad_token_id)
         predictions.append(tokenizer.decode(generated[0][prompt_length:], skip_special_tokens=True))
         if index % 10 == 0:
             print(f"  evaluated {index}/{len(rows)} held-out prompts")
@@ -254,8 +254,16 @@ def main() -> int:
     import torch
     from datasets import Dataset
     from peft import LoraConfig, prepare_model_for_kbit_training
-    import peft.import_utils
-    peft.import_utils.is_torchao_available = lambda: False
+    try:
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
+    except Exception:
+        pass
+    try:
+        import peft.tuners.lora.torchao
+        peft.tuners.lora.torchao.is_torchao_available = lambda: False
+    except Exception:
+        pass
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from trl import SFTConfig, SFTTrainer
 
@@ -291,6 +299,8 @@ def main() -> int:
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token_id is not None:
+        model.config.pad_token_id = tokenizer.pad_token_id
 
     model.config.use_cache = False
 
@@ -322,21 +332,27 @@ def main() -> int:
         bias="none",
         task_type="CAUSAL_LM",
     )
-    warmup_kw = {"warmup_ratio": 0.05} if "warmup_ratio" in getattr(SFTConfig, "__dataclass_fields__", {}) else {"warmup_steps": 0.05}
+    
+    sft_fields = getattr(SFTConfig, "__dataclass_fields__", {})
+    warmup_kw = {"warmup_ratio": 0.05} if "warmup_ratio" in sft_fields else {"warmup_steps": 0.05}
+    eval_kw = {"eval_strategy": "epoch"} if "eval_strategy" in sft_fields else {"evaluation_strategy": "epoch"}
+    max_len_val = min(args.max_length, 512) if not has_cuda else args.max_length
+    max_len_kw = {"max_length": max_len_val} if "max_length" in sft_fields else {"max_seq_length": max_len_val}
+
     train_config = SFTConfig(
         output_dir=str(args.output_dir),
         num_train_epochs=args.epochs,
-        per_device_train_batch_size=1 if has_cuda else 2,
+        per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=8 if has_cuda else 4,
         learning_rate=1e-4 if has_cuda else 2e-4,
         **warmup_kw,
+        **eval_kw,
+        **max_len_kw,
         lr_scheduler_type="cosine",
         logging_steps=5,
-        eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
-        max_length=min(args.max_length, 512) if not has_cuda else args.max_length,
         assistant_only_loss=False,
         gradient_checkpointing=has_cuda,
         gradient_checkpointing_kwargs={"use_reentrant": False} if has_cuda else None,
@@ -360,8 +376,11 @@ def main() -> int:
     print("Running fine-tuned generation evaluation on the same held-out split...")
     tuned_predictions = generate_predictions(trainer.model, tokenizer, eval_rows, schemas)
     tuned_metrics = score_predictions(eval_rows, tuned_predictions)
-    trainer.save_model(str(args.output_dir / "adapter"))
-    tokenizer.save_pretrained(args.output_dir / "adapter")
+    
+    adapter_dir = args.output_dir / "adapter"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    trainer.save_model(str(adapter_dir))
+    tokenizer.save_pretrained(str(adapter_dir))
 
     report = {
         "base_model": args.model_id,
