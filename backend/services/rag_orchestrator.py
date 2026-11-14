@@ -405,6 +405,14 @@ async def hybrid_search_rrf(
             }
             for row in result
         ]
+        # If filtered by course_code returned 0 chunks, automatically retry unfiltered
+        if not chunks and c_code is not None:
+            return await hybrid_search_rrf(
+                db, query_text, query_embedding, k=k, rrf_k=rrf_k,
+                course_code=None, content_type_filter=content_type_filter,
+                department=department, semester=semester, section=section,
+                doc_type=doc_type, document_id=document_id,
+            )
         return chunks
     except Exception as e:
         logger.warning("Hybrid search RRF notice: %s", e)

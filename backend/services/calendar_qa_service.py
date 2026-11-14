@@ -419,14 +419,14 @@ async def answer_calendar_query(
 
         if asks_even:
             ans = (
-                "### 🏫 Commencement of Classes — Even Semester (AY 2026–2027)\n\n"
+                "### Commencement of Classes — Even Semester (AY 2026–2027)\n\n"
                 "According to the authoritative **Academic Calendar (AY 2026–2027)**, classes commence on the following dates by cohort:\n\n"
                 f"{format_commence_table(even_events)}"
             )
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans, "events": [{"date": e.start_date.strftime("%B %d, %Y"), "name": e.name} for e in even_events]}
         elif asks_odd:
             ans = (
-                "### 🏫 Commencement of Classes — Odd Semester (AY 2026–2027)\n\n"
+                "### Commencement of Classes — Odd Semester (AY 2026–2027)\n\n"
                 "According to the authoritative **Academic Calendar (AY 2026–2027)**, classes commence on the following dates by cohort:\n\n"
                 f"{format_commence_table(odd_events)}\n\n"
                 "*Note: Preparatory event Sadgamaya '26 was held on June 15–16, 2026.*"
@@ -434,10 +434,10 @@ async def answer_calendar_query(
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans, "events": [{"date": e.start_date.strftime("%B %d, %Y"), "name": e.name} for e in odd_events]}
         else:
             ans = (
-                "### 🏫 Commencement of Classes (AY 2026–2027)\n\n"
-                "#### 🍂 Odd Semester Commencement (2026):\n"
+                "### Commencement of Classes (AY 2026–2027)\n\n"
+                "#### Odd Semester Commencement (2026):\n"
                 f"{format_commence_table(odd_events)}\n\n"
-                "#### 🌸 Even Semester Commencement (2026–2027):\n"
+                "#### Even Semester Commencement (2026–2027):\n"
                 f"{format_commence_table(even_events)}"
             )
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans, "events": [{"date": e.start_date.strftime("%B %d, %Y"), "name": e.name} for e in all_commence_events]}
@@ -463,23 +463,23 @@ async def answer_calendar_query(
 
         if asks_even:
             ans = (
-                "### 📝 Mid-Term Examinations Schedule — Even Semester (AY 2026–2027)\n\n"
+                "### Mid-Term Examinations Schedule — Even Semester (AY 2026–2027)\n\n"
                 f"{format_exam_list(even_mid)}\n\n"
                 "> **Even Semester 2025–2026 Reference**: Mid-Term Examinations were conducted from **January 19, 2026 to January 28, 2026** *(Source: Seating Arrangement Doc `BTech-2023-SA.pdf`)*."
             )
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans}
         elif asks_odd:
             ans = (
-                "### 📝 Mid-Term Examinations Schedule — Odd Semester (AY 2026–2027)\n\n"
+                "### Mid-Term Examinations Schedule — Odd Semester (AY 2026–2027)\n\n"
                 f"{format_exam_list(odd_mid)}"
             )
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans}
         else:
             ans = (
-                "### 📝 Mid-Term Examinations Schedule (Academic Calendar 2026–2027)\n\n"
-                "#### 🍂 Odd Semester (AY 2026–2027):\n"
+                "### Mid-Term Examinations Schedule (Academic Calendar 2026–2027)\n\n"
+                "#### Odd Semester (AY 2026–2027):\n"
                 f"{format_exam_list(odd_mid)}\n\n"
-                "#### 🌸 Even Semester (AY 2026–2027):\n"
+                "#### Even Semester (AY 2026–2027):\n"
                 f"{format_exam_list(even_mid)}\n\n"
                 "> **Even Semester 2025–2026 Reference**: Mid-Term Examinations were conducted from **January 19, 2026 to January 28, 2026** *(Source: Seating Arrangement Doc `BTech-2023-SA.pdf`)*."
             )
@@ -505,17 +505,17 @@ async def answer_calendar_query(
             return "\n".join(f"- **{e.name}**: Begins **{e.start_date.strftime('%B %d, %Y')} ({e.start_date.strftime('%A')})**" for e in events)
 
         if asks_even:
-            ans = f"### 🎓 End-Semester Final Examinations Schedule — Even Semester (AY 2026–2027)\n\n{format_end_list(even_end)}"
+            ans = f"### End-Semester Final Examinations Schedule — Even Semester (AY 2026–2027)\n\n{format_end_list(even_end)}"
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans}
         elif asks_odd:
-            ans = f"### 🎓 End-Semester Final Examinations Schedule — Odd Semester (AY 2026–2027)\n\n{format_end_list(odd_end)}"
+            ans = f"### End-Semester Final Examinations Schedule — Odd Semester (AY 2026–2027)\n\n{format_end_list(odd_end)}"
             return {"calendar_mode": "milestone_lookup", "markdown_answer": ans}
         else:
             ans = (
-                "### 🎓 End-Semester Final Examinations Schedule (AY 2026–2027)\n\n"
-                "#### 🍂 Odd Semester 2026:\n"
+                "### End-Semester Final Examinations Schedule (AY 2026–2027)\n\n"
+                "#### Odd Semester 2026:\n"
                 f"{format_end_list(odd_end)}\n\n"
-                "#### 🌸 Even Semester 2027:\n"
+                "#### Even Semester 2027:\n"
                 f"{format_end_list(even_end)}\n\n"
                 "> For specific course-code exam dates (e.g. `23CSE312`), ask: *\"When is the 23CSE312 exam?\"*."
             )
@@ -759,7 +759,7 @@ async def answer_calendar_query(
             for h in named_holidays
         )
         ans = (
-            "### 🏖️ Official Holidays (Academic Year 2026–2027)\n\n"
+            "### Official Holidays (Academic Year 2026–2027)\n\n"
             f"Amrita Vishwa Vidyapeetham official non-working holidays:\n\n"
             "| Date | Day | Occasion / Festival |\n"
             "| :--- | :--- | :--- |\n"
@@ -774,7 +774,7 @@ async def answer_calendar_query(
     if any(k in q_norm for k in ["academic year begin", "year begin", "commence", "classes commence", "when does the 2026", "classes start"]):
         if any(w in q_norm for w in ["final year", "iv yr", "fourth year", "7th sem", "vii sem"]):
             ans = (
-                "### 🎓 Commencement of AY 2026–2027 for Final-Year Students\n\n"
+                "### Commencement of AY 2026–2027 for Final-Year Students\n\n"
                 "- **Date**: **June 17, 2026 (Wednesday)**\n"
                 "- **Cohorts**: All **Final Years** of ASE, ASC, ASAI, and IV & V Year Integrated M.Sc\n"
                 "- **Significance**: Marks **Class Day 1** of Semester VII\n"
@@ -784,7 +784,7 @@ async def answer_calendar_query(
 
         if any(w in q_norm for w in ["third year", "iii yr", "3rd year", "5th sem", "v sem"]):
             ans = (
-                "### 🎓 Class Commencement for Third-Year Students (AY 2026–2027)\n\n"
+                "### Class Commencement for Third-Year Students (AY 2026–2027)\n\n"
                 "- **Date**: **June 22, 2026 (Monday)**\n"
                 "- **Cohorts**: All **Third Years** of ASE, ASC, ASAI, and ASPS\n"
                 "- **Significance**: Marks **Class Day 1** of Semester V\n"
@@ -794,7 +794,7 @@ async def answer_calendar_query(
 
         if any(w in q_norm for w in ["second year", "ii yr", "2nd year", "3rd sem", "iii sem"]):
             ans = (
-                "### 🎓 Class Commencement for Second-Year Students\n\n"
+                "### Class Commencement for Second-Year Students\n\n"
                 "- **Date**: **June 29, 2026 (Monday)**\n"
                 "- **Cohorts**: All **Second Years** of UG & PG (ASC, ASE, ASAI & ASPS)\n"
                 "- **Significance**: Marks **Class Day 1** of Semester III"
@@ -803,7 +803,7 @@ async def answer_calendar_query(
 
         if any(w in q_norm for w in ["first year", "i yr", "freshers", "1st sem", "i sem"]):
             ans = (
-                "### 🎓 Class Commencement for First-Year Students\n\n"
+                "### Class Commencement for First-Year Students\n\n"
                 "- **Date**: **July 15, 2026 (Wednesday)**\n"
                 "- **Cohorts**: All **First Year** B.Tech students (ASC, ASE, ASAI, II Year AISL)\n"
                 "- *(PG and Int M.Sc First Years commence earlier on July 08, 2026)*"
@@ -815,7 +815,7 @@ async def answer_calendar_query(
     # ---------------------------------------------------------
     if "june 17" in q_norm or "2026 06 17" in q_norm:
         ans = (
-            "### 📅 Academic Calendar: June 17, 2026 (Wednesday)\n\n"
+            "### Academic Calendar: June 17, 2026 (Wednesday)\n\n"
             "- **Event**: **Commencement of Classes for ALL Final Years** of ASE, ASC, ASAI, IV yr & V yr Int M.Sc\n"
             "- **Cohort Progress**: Marks **Class Day 1** for final-year engineering students\n"
             "- **Institutional Status**: Working Day (`W`)"
@@ -827,9 +827,9 @@ async def answer_calendar_query(
     # ---------------------------------------------------------
     if "june 20" in q_norm or "2026 06 20" in q_norm:
         ans = (
-            "### 🔄 June 20, 2026: Timetable Day Substitution\n\n"
+            "### June 20, 2026: Timetable Day Substitution\n\n"
             "- **Calendar Date**: **June 20, 2026** (Natural Day: **Saturday**)\n"
-            "- **Timetable Applied**: **Monday's Timetable** ⚠️\n"
+            "- **Timetable Applied**: **Monday's Timetable** *(Academic Override)*\n"
             "- **Status**: **Working Day (`W`)**\n"
             "- **Cohort Progress**: Counts as **Class Day 4** for Final Year students"
         )
@@ -841,7 +841,7 @@ async def answer_calendar_query(
     if any(k in q_norm for k in ["last instruction day", "last working day for class", "last day of instruction"]):
         if any(w in q_norm for w in ["final year", "iv yr", "fourth year", "7th sem", "vii sem"]):
             ans = (
-                "### 🏁 Last Instruction Day for Final-Year Students\n\n"
+                "### Last Instruction Day for Final-Year Students\n\n"
                 "- **Date**: **October 16, 2026 (Friday)**\n"
                 "- **Significance**: Concludes 80 instructional class days for Semester VII\n"
                 "- **Subsequent Event**: End-Semester Examinations commence on **October 21, 2026**."
@@ -849,7 +849,7 @@ async def answer_calendar_query(
             return {"markdown_answer": ans}
         if any(w in q_norm for w in ["third year", "iii yr", "3rd year", "5th sem", "v sem"]):
             ans = (
-                "### 🏁 Last Instruction Day for Third-Year Students\n\n"
+                "### Last Instruction Day for Third-Year Students\n\n"
                 "- **Date**: **October 23, 2026 (Friday)**\n"
                 "- **Subsequent Event**: End-Semester Examinations commence on **October 26, 2026**."
             )
@@ -858,7 +858,7 @@ async def answer_calendar_query(
     if any(k in q_norm for k in ["end semester exam", "end sem", "endsem", "exam begin", "exams begin", "exams start"]):
         if any(w in q_norm for w in ["third year", "iii yr", "3rd year", "5th sem", "v sem"]):
             ans = (
-                "### 📝 End-Semester Examinations for Third-Year Students\n\n"
+                "### End-Semester Examinations for Third-Year Students\n\n"
                 "- **Exam Commencement Date**: **October 26, 2026 (Monday)**\n"
                 "- **Cohorts**: All Third Years of ASC, ASE, ASAI & ASPS (Semester V)\n"
                 "- **Last Instruction Day**: October 23, 2026"
@@ -866,7 +866,7 @@ async def answer_calendar_query(
             return {"markdown_answer": ans}
         if any(w in q_norm for w in ["final year", "iv yr", "4th year", "7th sem", "vii sem"]):
             ans = (
-                "### 📝 End-Semester Examinations for Final-Year Students\n\n"
+                "### End-Semester Examinations for Final-Year Students\n\n"
                 "- **Exam Commencement Date**: **October 21, 2026 (Wednesday)**\n"
                 "- **Cohorts**: All Final Years of ASC, ASE, ASAI, IV yr & V yr Int M.Sc (Semester VII)\n"
                 "- **Last Instruction Day**: October 16, 2026"
@@ -878,7 +878,7 @@ async def answer_calendar_query(
     # ---------------------------------------------------------
     if any(w in q_norm for w in ["first year", "i yr", "i year"]) and any(k in q_norm for k in ["event", "events", "calendar"]):
         ans = (
-            "### 📅 Key Academic Calendar Events for First-Year B.Tech (ASE)\n\n"
+            "### Key Academic Calendar Events for First-Year B.Tech (ASE)\n\n"
             "| Date | Milestone / Event |\n"
             "| :--- | :--- |\n"
             "| **July 15, 2026** | **Commencement of Classes** (Semester I) |\n"
@@ -896,7 +896,7 @@ async def answer_calendar_query(
     # ---------------------------------------------------------
     if any(k in q_norm for k in ["class day count", "class day", "cohort on a particular date"]):
         ans = (
-            "### 📊 Cohort Class-Day Counts (AY 2026–2027)\n\n"
+            "### Cohort Class-Day Counts (AY 2026–2027)\n\n"
             "In the Academic Calendar, each instructional working day (`W`) tracks an authoritative **Class-Day Count (CD)** for distinct student cohorts:\n\n"
             "| Cohort | Commencement Date | Total Class Days | Last Instruction Day |\n"
             "| :--- | :--- | :--- | :--- |\n"
@@ -904,7 +904,7 @@ async def answer_calendar_query(
             "| **Third Year B.Tech (III Yr ASE)** | **June 22, 2026** (CD 1) | **80 Class Days** | **October 23, 2026** (CD 80) |\n"
             "| **Second Year B.Tech (II Yr ASE)** | **June 29, 2026** (CD 1) | **80 Class Days** | **October 30, 2026** (CD 80) |\n"
             "| **First Year B.Tech (I Yr ASE)** | **July 15, 2026** (CD 1) | **80 Class Days** | **November 17, 2026** (CD 80) |\n\n"
-            "> 💡 **Daily Progress Example**: On **Saturday, June 20, 2026** (working day operating on Monday's Timetable), the class-day count is **Class Day 4** for Final Year students.\n\n"
+            "> **Daily Progress Example**: On **Saturday, June 20, 2026** (working day operating on Monday's Timetable), the class-day count is **Class Day 4** for Final Year students.\n\n"
             "*To check the class-day count for any specific calendar date, ask with a date like: 'What is the class day on August 10, 2026?'*"
         )
         return {"markdown_answer": ans}
@@ -932,7 +932,7 @@ async def answer_calendar_query(
     # ---------------------------------------------------------
     if any(k in q_norm for k in ["given date marked", "marked as a holiday", "holiday, working day, exam", "status categories", "calendar status"]):
         ans = (
-            "### 📅 Academic Day Status Categories (AY 2026–2027)\n\n"
+            "### Academic Day Status Categories (AY 2026–2027)\n\n"
             "Every calendar date in the institutional academic calendar is classified into one of the following authoritative statuses:\n\n"
             "1. **Working Day (`W`)**:\n"
             "   - Regular instructional day with scheduled lectures and laboratories.\n"
@@ -974,7 +974,7 @@ async def answer_calendar_query(
 
             table_md = "\n".join(rows) if rows else "*No schedule changes or special holidays found for this month.*"
             ans = (
-                f"### 🗓️ Academic Schedule & Events for {target_month.capitalize()} 2026\n\n"
+                f"### Academic Schedule & Events for {target_month.capitalize()} 2026\n\n"
                 "| Date | Status | Schedule / Events |\n"
                 "| :--- | :--- | :--- |\n"
                 f"{table_md}\n"
@@ -982,7 +982,7 @@ async def answer_calendar_query(
             return {"markdown_answer": ans}
 
         ans = (
-            "### 🗓️ Key Monthly Schedule Highlights & Overrides (AY 2026–2027)\n\n"
+            "### Key Monthly Schedule Highlights & Overrides (AY 2026–2027)\n\n"
             "| Month | Key Cohort Milestones & Schedule Changes |\n"
             "| :--- | :--- |\n"
             "| **June 2026** | **June 17**: AY Begins (Final Years). **June 20**: Saturday operates on **Monday's Timetable**. **June 22**: Third Years commence. **June 29**: Second Years commence. |\n"
@@ -998,7 +998,7 @@ async def answer_calendar_query(
 
     # General Fallback
     ans = (
-        "### 🗓️ Academic Calendar (AY 2026–2027)\n\n"
+        "### Academic Calendar (AY 2026–2027)\n\n"
         "Please specify a specific date (e.g., *'June 17, 2026'* or *'August 15'*), cohort (*'final year'* or *'third year'*), "
         "or milestone (*'last instruction day'*, *'holidays list'*, *'exam commencement'*) to get authoritative dates."
     )

@@ -224,7 +224,7 @@ async def answer_regulations_query(
                 f"{c['clause_text']}"
             )
         ans = (
-            f"### 📜 Amrita B.Tech Academic Regulations (2023 Admissions)\n\n"
+            f"### Amrita B.Tech Academic Regulations (2023 Admissions)\n\n"
             f"Found **{len(all_clauses)} authoritative regulation clauses** relevant to your inquiry:\n\n"
             + "\n\n---\n\n".join(clause_blocks)
         )

@@ -79,6 +79,10 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - uploads_data:/app/backend/uploads
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - ./tests:/app/tests
+      - ./pytest.ini:/app/pytest.ini
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 15s

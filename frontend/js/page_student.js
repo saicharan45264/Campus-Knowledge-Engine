@@ -209,8 +209,8 @@ function renderProblemCards(data) {
     if (data.subgraph_expansion && data.subgraph_expansion.course_code) {
       const sub = data.subgraph_expansion;
       const topicsHtml = (sub.topics || []).map(t => `<span style="display:inline-block;padding:2px 7px;background:#f1f5f9;color:#334155;border-radius:4px;font-size:11.5px;border:1px solid #cbd5e1;">${escapeHtml(t)}</span>`).join('');
-      const prereqsHtml = (sub.prerequisites || []).map(p => `<span style="display:inline-block;padding:2px 7px;background:#e0f2fe;color:#0369a1;border-radius:4px;font-size:11.5px;border:1px solid #bae6fd;font-weight:600;">🔗 ${escapeHtml(p)}</span>`).join('');
-      const coHtml = (sub.course_outcomes || []).map(co => `<div style="font-size:12px;color:#475569;margin-top:4px;">🎯 <strong>${escapeHtml(co)}</strong></div>`).join('');
+      const prereqsHtml = (sub.prerequisites || []).map(p => `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:#e0f2fe;color:#0369a1;border-radius:4px;font-size:11.5px;border:1px solid #bae6fd;font-weight:600;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>${escapeHtml(p)}</span>`).join('');
+      const coHtml = (sub.course_outcomes || []).map(co => `<div style="display:flex;align-items:flex-start;gap:6px;font-size:12px;color:#475569;margin-top:4px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span><strong>${escapeHtml(co)}</strong></span></div>`).join('');
       return `
         <div class="problem-list-empty" style="text-align:left;max-width:680px;margin:0 auto;padding:16px 20px;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
@@ -264,7 +264,7 @@ function renderProblemCards(data) {
     const marks   = p.marks   ? `<span class="pc-mark">${p.marks} marks</span>` : '';
     const btl     = p.btl    ? `<span class="pc-btl">${btlLabel(p.btl)}</span>` : '';
     const course  = p.course_code ? `<span class="pc-course">${escapeHtml(p.course_code)}</span>` : '';
-    const topicTag = p.topic_name ? `<span class="pc-topic-badge" style="font-size:11px;padding:2px 7px;background:#ede9fe;color:#6d28d9;border-radius:4px;border:1px solid #ddd6fe;font-weight:500;">📌 ${escapeHtml(p.topic_name)}</span>` : '';
+    const topicTag = p.topic_name ? `<span class="pc-topic-badge" style="font-size:11px;padding:2px 7px;background:#ede9fe;color:#6d28d9;border-radius:4px;border:1px solid #ddd6fe;font-weight:500;display:inline-flex;align-items:center;gap:4px;"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>${escapeHtml(p.topic_name)}</span>` : '';
 
     // Zoomable Image
     const resolvedImgUrl = p.image_url && p.image_url !== 'None'

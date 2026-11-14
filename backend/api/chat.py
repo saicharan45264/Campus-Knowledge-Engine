@@ -50,6 +50,7 @@ from backend.services.graph_service import (
     expand_subgraph_context,
     fetch_all_problems_by_topic,
     fetch_problems_by_topic_graph,
+    filter_contrasting_subtopics,
 )
 from backend.services.rag_orchestrator import (
     append_session_message,
@@ -315,6 +316,8 @@ async def chat_endpoint(
                         logger.debug("Mark filter conversion notice: %s", exc)
                         continue
                 problems.append(p)
+
+        problems = filter_contrasting_subtopics(problems, topic_name or question)
 
         if payload.image_b64 and not problems:
             mm_emb = await _get_q_emb()

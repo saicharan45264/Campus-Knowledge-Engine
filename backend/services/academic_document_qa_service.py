@@ -1221,10 +1221,12 @@ async def answer_academic_document_query(
     elif month_year:
         month, year = month_year
         title = f"Exam timetable for {date(year, month, 1):%B %Y}"
-    answer = f"### {title}\n\n| Date | Session | Department | Scheduled courses | Source |\n|---|---|---|---|---|\n" + "\n".join(
-        f"| {row['date']} | {row['session']} | {row['department']} | {row['text'].replace('|', '\\|')} | {row['filename']}, p. {row['page']} |"
+    pipe_char = "|"
+    table_lines = [
+        f"| {row['date']} | {row['session']} | {row['department']} | {row['text'].replace(pipe_char, '/')} | {row['filename']}, p. {row['page']} |"
         for row in deduped[:60]
-    )
+    ]
+    answer = f"### {title}\n\n| Date | Session | Department | Scheduled courses | Source |\n|---|---|---|---|---|\n" + "\n".join(table_lines)
     if re.search(r"\blab\s+exam\b", question, re.I) and deduped:
         lab_departments = ", ".join(dict.fromkeys(row["department"] for row in deduped))
         answer = (

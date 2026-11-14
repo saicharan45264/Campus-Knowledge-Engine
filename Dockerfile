@@ -28,6 +28,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY scripts/ ./scripts/
+COPY tests/ ./tests/
+COPY pytest.ini ./
 
 # Create uploads directory structure
 RUN mkdir -p /app/backend/uploads/images

@@ -135,16 +135,8 @@ def resolve_course_and_topics(
 
 
 def fetch_course_topics(neo4j_driver, course_code: str, course_title: str = "") -> str:
-    """Fetch topics only from the exact admin-selected course code."""
-    with neo4j_driver.session() as session:
-        records = session.run(
-            """
-            MATCH (c:Course {code: $c_code})-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
-            RETURN u.title AS unit, t.topic_id AS topic_id, t.name AS topic_name
-            ORDER BY u.number, t.order
-            """,
-            c_code=(course_code or "").strip().upper(),
-        ).data()
+    """Fetch formatted Unit and Topic nodes for a course (with title alias resolution if exact code is absent)."""
+    _, records = resolve_course_and_topics(neo4j_driver, course_code, course_title)
     if not records:
         return "No syllabus found."
     return "\n".join(
@@ -294,11 +286,20 @@ async def semantic_map_questions_to_topics(
             q_vecs[i] = q_vecs[i][0] if q_vecs[i] else []
 
     # Stage 2 & 3: Score + selective tie-breaker
-    final_mapping: dict[int, list[str]] = {}
+    final_mapping: dict[int, dict[str, Any]] = {}
     for i, _q in enumerate(questions):
         combined_text = q_combined_texts[i]
         if not combined_text:
+            final_mapping[i] = {
+                "status": "unmapped",
+                "mappings": [],
+                "suggestions": [],
+                "candidates": [],
+                "mapper_version": "visionmodel-hybrid-v2",
+                "reason": "Empty question text.",
+            }
             continue
+
         q_emb = q_vecs.get(i) or []
 
         scored = []
@@ -306,28 +307,74 @@ async def semantic_map_questions_to_topics(
             cos = _topic_cosine_similarity(q_emb, t_emb) if q_emb and t_emb else 0.0
             kw = _topic_keyword_overlap(combined_text, t["name"])
             hybrid = 0.55 * cos + 0.45 * kw
-            scored.append((hybrid, t))
+            scored.append({
+                "topic_id": t["id"],
+                "topic_name": t["name"],
+                "confidence": round(hybrid, 4),
+                "semantic_score": round(cos, 4),
+                "keyword_score": round(kw, 4),
+                "mapping_method": "visionmodel-hybrid-v2",
+                "raw_topic": t,
+                "score": hybrid,
+            })
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_score, top_topic = scored[0]
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        top = scored[0]
+        top_score = top["score"]
+
+        candidates_cleaned = [
+            {
+                "topic_id": c["topic_id"],
+                "confidence": c["confidence"],
+                "semantic_score": c["semantic_score"],
+                "keyword_score": c["keyword_score"],
+                "mapping_method": c["mapping_method"],
+            }
+            for c in scored[:5]
+        ]
+
         if top_score < 0.22:
-            # Avoid polluting unrelated syllabus topics if relevance is too weak
+            final_mapping[i] = {
+                "status": "unmapped",
+                "mappings": [],
+                "suggestions": [],
+                "candidates": candidates_cleaned,
+                "mapper_version": "visionmodel-hybrid-v2",
+                "reason": f"Top similarity {top_score:.2f} below threshold 0.22.",
+            }
             continue
 
-        selected_tids = [top_topic["id"]]
-        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        selected_candidates = [candidates_cleaned[0]]
+        second_score = scored[1]["score"] if len(scored) > 1 else 0.0
 
         # Selective tie-breaker only on close top candidates or moderate confidence
         if (top_score - second_score < 0.04 or top_score < 0.45) and len(scored) > 1:
             tb_ids = await _tiebreak_topic_with_llm(
                 combined_text,
-                [item[1] for item in scored[:5]],
+                [item["raw_topic"] for item in scored[:5]],
             )
             if tb_ids:
-                selected_tids = tb_ids
+                selected_candidates = [
+                    c for c in candidates_cleaned if c["topic_id"] in tb_ids
+                ] or [candidates_cleaned[0]]
         elif len(scored) > 1 and second_score >= 0.62 and second_score >= top_score * 0.88:
-            selected_tids.append(scored[1][1]["id"])
+            selected_candidates.append(candidates_cleaned[1])
 
-        final_mapping[i] = selected_tids
+        if top_score >= 0.60:
+            status = "mapped"
+            mappings = selected_candidates
+            suggestions = []
+        else:
+            status = "provisional"
+            mappings = []
+            suggestions = selected_candidates
+
+        final_mapping[i] = {
+            "status": status,
+            "mappings": mappings,
+            "suggestions": suggestions,
+            "candidates": candidates_cleaned,
+            "mapper_version": "visionmodel-hybrid-v2",
+        }
 
     return final_mapping
