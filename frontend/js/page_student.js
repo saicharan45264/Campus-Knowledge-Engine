@@ -43,9 +43,9 @@ export function stopGeneration() {
 }
 window.stopGeneration = stopGeneration;
 
-function scrollBottom() { 
-  const el = document.getElementById('messages'); 
-  el.scrollTop = el.scrollHeight; 
+function scrollBottom() {
+  const el = document.getElementById('messages');
+  el.scrollTop = el.scrollHeight;
 }
 
 function saveCurrentSession() {
@@ -87,10 +87,10 @@ export function clearChat() {
   saveCurrentSession();
   currentSessionId = crypto.randomUUID();
   chatSessions[currentSessionId] = { id: currentSessionId, title: null, html: EMPTY_STATE_HTML };
-  
+
   document.getElementById('messages').innerHTML = EMPTY_STATE_HTML;
   removeTyping();
-  
+
   document.querySelectorAll('.hist-item').forEach(h => h.classList.remove('active'));
 }
 window.clearChat = clearChat;
@@ -100,16 +100,16 @@ export function loadChat(id) {
     stopGeneration();
   }
   if (currentSessionId === id) return;
-  
+
   saveCurrentSession();
   currentSessionId = id;
   const session = chatSessions[id];
   document.getElementById('messages').innerHTML = session.html;
-  
+
   document.querySelectorAll('.hist-item').forEach(h => h.classList.remove('active'));
   const activeItem = document.getElementById('hist-' + id);
   if (activeItem) activeItem.classList.add('active');
-  
+
   scrollBottom();
 }
 window.loadChat = loadChat;
@@ -119,13 +119,13 @@ clearChat();
 function addUserMessage(text, imageB64 = null) {
   const es = document.getElementById('empty-state');
   if (es) es.remove();
-  
+
   let imgHtml = '';
   if (imageB64 && (imageB64.startsWith('data:image/') || imageB64.startsWith('http://') || imageB64.startsWith('https://') || imageB64.startsWith('/static/'))) {
     const resolvedSrc = imageB64.startsWith('/') ? `${API_BASE}${imageB64}` : imageB64;
     imgHtml = `<img src="${escapeHtml(resolvedSrc)}" class="user-attached-img" alt="Attached Image" />`;
   }
-  
+
   const row = document.createElement('div');
   row.className = 'msg-row user-row';
   row.innerHTML = `
@@ -149,13 +149,13 @@ function showTyping(isVision = false) {
   isTyping = true;
   const row = document.createElement('div');
   row.className = 'typing-row'; row.id = 'typing-row';
-  
+
   if (isVision) {
     row.innerHTML = `<div class="msg-av ai vision"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div><div class="typing-bubble vision-bubble">Reading uploaded image<span class="dot-anim">...</span></div>`;
   } else {
     row.innerHTML = `<div class="msg-av ai"><img src="icons/icon-192.png" alt="M" class="no-lightbox" /></div><div class="typing-bubble"><div class="t-dot"></div><div class="t-dot"></div><div class="t-dot"></div></div>`;
   }
-  
+
   document.getElementById('messages').appendChild(row);
   scrollBottom();
 }
@@ -265,7 +265,7 @@ function renderProblemCards(data) {
     const btl     = p.btl    ? `<span class="pc-btl">${btlLabel(p.btl)}</span>` : '';
     const course  = p.course_code ? `<span class="pc-course">${escapeHtml(p.course_code)}</span>` : '';
     const topicTag = p.topic_name ? `<span class="pc-topic-badge" style="font-size:11px;padding:2px 7px;background:#ede9fe;color:#6d28d9;border-radius:4px;border:1px solid #ddd6fe;font-weight:500;">📌 ${escapeHtml(p.topic_name)}</span>` : '';
-    
+
     // Zoomable Image
     const resolvedImgUrl = p.image_url && p.image_url !== 'None'
       ? (p.image_url.startsWith('/') ? `${API_BASE}${p.image_url}` : p.image_url)
@@ -279,7 +279,7 @@ function renderProblemCards(data) {
            </div>
          </div>`
       : '';
-      
+
     // Topic match badge
     let aiBadge = '';
     if (p.mapping_confidence) {
@@ -866,15 +866,276 @@ function renderStreamWithThinking(fullText, isDone = false) {
     : outputHtml;
 }
 
+function renderAcademicMarkdown(markdown = '') {
+  const inline = value => escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+  const lines = String(markdown).split(/\r?\n/);
+  const blocks = [];
+  let list = [];
+  let table = [];
+  const flushList = () => {
+    if (list.length) blocks.push(`<ul style="margin:6px 0 10px;padding-left:22px;">${list.map(item => `<li>${inline(item)}</li>`).join('')}</ul>`);
+    list = [];
+  };
+  const flushTable = () => {
+    if (table.length) {
+      const rows = table.filter(line => !/^\|?\s*:?-{2,}/.test(line));
+      const [head, ...body] = rows;
+      const cells = line => line.replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+      blocks.push(`<div style="overflow-x:auto;margin:8px 0;"><table style="border-collapse:collapse;width:100%;font-size:13px;"><thead><tr>${cells(head || '').map(cell => `<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">${inline(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${cells(row).map(cell => `<td style="padding:8px;border-bottom:1px solid #eef2f7;">${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+    }
+    table = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) { flushList(); flushTable(); continue; }
+    if (/^\|.*\|$/.test(trimmed)) { flushList(); table.push(trimmed); continue; }
+    flushTable();
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      const level = Math.min(heading[1].length + 1, 5);
+      blocks.push(`<h${level} style="margin:12px 0 6px;">${inline(heading[2])}</h${level}>`);
+    } else if (/^[-*]\s+/.test(trimmed)) {
+      list.push(trimmed.replace(/^[-*]\s+/, ''));
+    } else {
+      flushList();
+      blocks.push(`<p style="margin:5px 0;">${inline(trimmed)}</p>`);
+    }
+  }
+  flushList(); flushTable();
+  return blocks.join('');
+}
+
+function renderCalendarResult(data) {
+  if (!data) return '<div class="problem-list-empty"><p>No calendar data found.</p></div>';
+
+  const day = data.day_details;
+  const events = data.events || [];
+  const overrides = data.upcoming_timetable_overrides || [];
+
+  let proseHtml = '';
+  // When day card is displayed, cards are good, remove the normal text at the top of the response!
+  if (data.markdown_answer && !day) {
+    const rawProse = renderAcademicMarkdown(data.markdown_answer);
+    proseHtml = `<div class="ai-prose-answer" style="margin-bottom:16px;line-height:1.65;font-size:14px;border-bottom:1px solid var(--border-soft);padding-bottom:12px;">${rawProse}</div>`;
+  }
+
+  // These query modes already contain a focused, authoritative answer in
+  // markdown. Avoid adding calendar event and override cards underneath it.
+  if (['holiday_list', 'next_holiday', 'working_saturdays', 'next_working_saturday', 'festival_holidays', 'next_festival_holiday', 'festival_event', 'milestone_lookup', 'timetable_substitutions'].includes(data.calendar_mode)) {
+    return `<div class="calendar-result-wrap">${proseHtml}</div>`;
+  }
+
+  let dayHtml = '';
+  if (day) {
+    const isHol = day.is_holiday;
+    const statusClass = isHol ? 'cal-status-holiday' : 'cal-status-working';
+    let statusText = 'Working Day (W)';
+    if (isHol) {
+      let holName = day.particulars || day.status || 'Holiday';
+      if (holName.toLowerCase() === 'institutional holiday' || holName.toLowerCase() === 'institutional') {
+        holName = 'Holiday';
+      }
+      statusText = holName;
+    }
+
+    let overrideBanner = '';
+    if (day.timetable_override) {
+      overrideBanner = `
+        <div class="cal-override-alert">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>
+            <strong>Timetable Day Substitution:</strong>
+            <span>${escapeHtml(day.day_of_week)} operates on <strong>${escapeHtml(day.timetable_override)}'s Timetable</strong></span>
+          </div>
+        </div>`;
+    }
+
+    const cohortsHtml = (day.cohorts && day.cohorts.length)
+      ? `<div class="cal-cohorts-grid">
+           ${day.cohorts.map(c => `
+             <div class="cal-cohort-chip">
+               <span class="coh-name">${escapeHtml(c.cohort)}</span>
+               <span class="coh-cnt">${c.class_day_count !== null ? `Class Day ${c.class_day_count}` : 'No class count'}</span>
+             </div>`).join('')}
+         </div>`
+      : '';
+
+    dayHtml = `
+      <div class="cal-day-card">
+        <div class="cal-day-top">
+          <div>
+            <div class="cal-day-name">${escapeHtml(day.day_of_week)}</div>
+            <div class="cal-date-title font-mono">${escapeHtml(day.date)}</div>
+          </div>
+          <span class="cal-status-pill ${statusClass}">${statusText}</span>
+        </div>
+        ${overrideBanner}
+        ${day.particulars && !day.timetable_override ? `<div class="cal-notes">${escapeHtml(day.particulars)}</div>` : ''}
+        ${cohortsHtml}
+      </div>`;
+  }
+
+  let eventsHtml = '';
+  if (events.length) {
+    const eventCards = events.map(e => {
+      let cat = (e.category || '').trim();
+      if (cat.toLowerCase() === 'institutional holiday' || cat.toLowerCase() === 'institutional') {
+        cat = 'Holiday';
+      } else if (cat.toLowerCase() === 'milestone') {
+        cat = '';
+      }
+      const catBadge = cat ? `<span class="cal-cat-badge ${escapeHtml(cat.toLowerCase())}">${escapeHtml(cat)}</span>` : '';
+      const cohortBadge = e.cohort ? `<span class="cal-cohort-badge">${escapeHtml(e.cohort)}</span>` : '';
+      const tagsHtml = (catBadge || cohortBadge) ? `<div class="cal-event-tags">${catBadge}${cohortBadge}</div>` : '';
+      return `
+      <div class="cal-event-row">
+        <div class="cal-event-date font-mono">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span>${escapeHtml(e.date)}</span>
+        </div>
+        <div class="cal-event-main">
+          <div class="cal-event-name">${escapeHtml(e.name)}</div>
+          ${tagsHtml}
+        </div>
+      </div>
+    `;
+    }).join('');
+
+    eventsHtml = `
+      <div class="cal-events-section">
+        <div class="cal-sec-title">${data.calendar_mode === 'month_events' ? 'Events' : 'Academic Events'}</div>
+        <div class="cal-events-list">${eventCards}</div>
+      </div>`;
+  }
+
+  let overridesHtml = '';
+  if (!day && overrides.length) {
+    const rows = overrides.map(o => `
+      <div class="cal-override-item">
+        <div class="co-date"><strong>${escapeHtml(o.date)}</strong> (${escapeHtml(o.natural_weekday)})</div>
+        <div class="co-arr">&rarr;</div>
+        <div class="co-applied">Operates on <strong>${escapeHtml(o.applied_timetable)}'s Timetable</strong></div>
+      </div>
+    `).join('');
+
+    overridesHtml = `
+      <div class="cal-overrides-section">
+        <div class="cal-sec-title">Calendar Timetable Substitutions</div>
+        <div class="cal-overrides-list">${rows}</div>
+      </div>`;
+  }
+
+  return `
+    <div class="calendar-result-wrap">
+      ${proseHtml}
+      ${dayHtml || eventsHtml || overridesHtml ? `
+      <div class="curriculum-hdr">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <h3 class="curr-name">${data.calendar_mode === 'month_events' ? `Academic Events — ${escapeHtml(data.calendar_period || '')}` : 'Academic Calendar (AY 2026-2027)'}</h3>
+        <span class="graph-fast-badge">Authoritative Calendar</span>
+      </div>
+      ${dayHtml}
+      ${eventsHtml}
+      ${overridesHtml}` : ''}
+    </div>`;
+}
+
+
+function renderAcademicResult(data) {
+  if (data.intent === "CALENDAR_LOOKUP") {
+    const calendar = { ...data, events: data.events || data.holidays || [], upcoming_timetable_overrides: data.overrides || [] };
+    return renderCalendarResult(calendar);
+  }
+  if (data.intent === 'TIMETABLE_LOOKUP' && Array.isArray(data.sessions) && data.sessions.length) {
+    const heading = String(data.markdown_answer || '').match(/^###\s+([^\n]+)/m)?.[1] || 'Class timetable';
+    const detail = data.date_details || {};
+    const override = detail.timetable_override ? `<div class="schedule-override">${escapeHtml(detail.date || '')} follows ${escapeHtml(detail.timetable_override)}'s timetable.</div>` : '';
+    const cards = data.sessions.map(session => {
+      const time = [session.start_time, session.end_time].filter(Boolean).join(' – ');
+      const meta = [session.faculty ? `Faculty: ${session.faculty}` : '', session.venue ? `Venue: ${session.venue}` : ''].filter(Boolean);
+      return `<section class="schedule-card">
+        <div class="schedule-slot"><span>Slot ${escapeHtml(String(session.slot || '—'))}</span>${time ? `<small>${escapeHtml(time)}</small>` : ''}</div>
+        <div class="schedule-content"><strong>${escapeHtml(session.activity || session.course_code || 'Class')}</strong>
+          ${session.course_code ? `<span class="schedule-code">${escapeHtml(session.course_code)}</span>` : ''}
+          ${session.weekday && data.timetable_mode !== 'day_schedule' ? `<div class="schedule-meta">${escapeHtml(session.weekday)}</div>` : ''}
+          ${meta.length ? `<div class="schedule-meta">${meta.map(escapeHtml).join(' · ')}</div>` : ''}
+        </div>
+      </section>`;
+    }).join('');
+    const note = data.timetable_mode === 'free_periods' ? '<p class="schedule-meta">The source timetable leaves these cells blank.</p>' : '';
+    return `<article class="schedule-result"><h3>${escapeHtml(heading)}</h3>${note}${override}<div class="schedule-cards">${cards}</div></article>`;
+  }
+  const title = data.title || ({
+    CALENDAR_LOOKUP: 'Academic Calendar',
+    TIMETABLE_LOOKUP: 'Class Timetable',
+    ACADEMIC_DOCUMENT_LOOKUP: 'Academic Schedule',
+    REGULATIONS_QUERY: 'Academic Regulations',
+  }[data.intent] || 'Academic Document Result');
+  const recordLimit = data.document_mode === 'exam_schedule' ? 60 : 12;
+  const records = Array.isArray(data.records) ? data.records.slice(0, recordLimit) : [];
+  if (data.document_mode === 'exam_schedule' && records.length) {
+    const formatDate = (value) => {
+      const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return escapeHtml(value || 'Date not extracted');
+      return escapeHtml(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+        .toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
+    };
+    const readableCourseName = (value) => String(value || '')
+      .replace(/([A-Za-z])(and|of|for|in|to)(?=[A-Z])/gi, '$1 $2 ')
+      .replace(/(?<=[a-z])(?=[A-Z])/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const cards = records.map((row) => {
+      const courses = String(row.text || '').split(/\s*\/\s*/).filter(Boolean).map((course) => {
+        const match = course.match(/^(\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?)\s*[-–:]?\s*(.*)$/i);
+        const code = match ? `<span style="font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#b20f48;background:#fff1f5;border:1px solid #f4cad8;border-radius:6px;padding:4px 7px;white-space:nowrap;">${escapeHtml(match[1].toUpperCase())}</span>` : '';
+        const name = readableCourseName(match ? match[2] : course);
+        return `<div style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid #eceef2;border-radius:9px;background:#fff;min-width:0;">
+          ${code}<span style="font-size:13px;line-height:1.5;color:#303640;overflow-wrap:anywhere;">${escapeHtml(name || course)}</span>
+        </div>`;
+      }).join('');
+      const session = String(row.session || '').split('/').map((value) => value.toUpperCase());
+      const sessionText = session.map((value) => value === 'FN' ? 'FN · Forenoon · 9:30 AM–12:30 PM' : value === 'AN' ? 'AN · Afternoon · 1:30 PM–4:30 PM' : value).join(' / ') || 'Session not extracted';
+      return `<section style="border:1px solid #e6e8ed;border-radius:12px;padding:14px;margin:10px 0;background:#fafbfc;">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:11px;">
+          <strong style="font-size:15px;color:#202630;">${formatDate(row.date)}</strong>
+          <span style="font-size:11px;font-weight:650;color:#6941c6;background:#f3efff;border:1px solid #ddd2ff;border-radius:999px;padding:4px 9px;">${escapeHtml(sessionText)}</span>
+          ${row.department ? `<span style="font-size:11px;font-weight:650;color:#475467;background:#f2f4f7;border:1px solid #e4e7ec;border-radius:999px;padding:4px 9px;">${escapeHtml(row.department)}</span>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:7px;">${courses || '<span>No courses were extracted for this row.</span>'}</div>
+        <div style="margin-top:10px;color:#8a8f98;font-size:11px;">Source: ${escapeHtml(row.filename || 'Uploaded exam schedule')}${row.page ? ` · page ${escapeHtml(String(row.page))}` : ''}</div>
+      </section>`;
+    }).join('');
+    return `<article style="min-width:min(100%,680px);max-width:900px;">
+      <header style="font-size:17px;font-weight:700;margin-bottom:10px;">${escapeHtml(title)}</header>
+      ${cards}
+    </article>`;
+  }
+  const answer = renderAcademicMarkdown(data.markdown_answer || 'No matching academic records were found.');
+  const sourceRecords = records.length ? `
+    <details style="margin-top:12px;border-top:1px solid #eef0f3;padding-top:10px;">
+      <summary style="cursor:pointer;font-size:12px;color:#667085;">Source rows (${records.length}${records.length === 12 ? '+' : ''})</summary>
+      <div style="display:grid;gap:7px;margin-top:8px;">${records.map(row => `<div style="padding:8px 10px;border:1px solid #eceef2;border-radius:8px;background:#fafafa;font-size:12px;line-height:1.5;">${escapeHtml(row.text || row.record_text || '')}${row.page ? `<div style="margin-top:4px;color:#8a8f98;">Page ${escapeHtml(row.page)}</div>` : ''}</div>`).join('')}</div>
+    </details>` : '';
+  return `<article style="min-width:min(100%,680px);max-width:900px;">
+    <header style="font-size:17px;font-weight:700;margin-bottom:10px;">${escapeHtml(title)}</header>
+    <div style="font-size:14px;line-height:1.65;color:#252a31;">${answer}</div>${sourceRecords}
+  </article>`;
+}
+
 export async function sendMessage() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   const b64 = attachedImageB64;
-  
+
   if (!text && !b64 || isTyping) return;
 
   input.value = ''; input.style.height = '';
-  
+
   addUserMessage(text, b64);
   addToHistory(text || 'Image Attachment');
   clearAttachment();
@@ -912,6 +1173,14 @@ export async function sendMessage() {
     // ── Check if backend returned a structured Fast-Path response (Zero-LLM) ──
     const msgId = res.headers.get('X-Message-ID') || null;
     const responseType = res.headers.get('X-Response-Type');
+    if (responseType === 'academic_result') {
+      const data = await res.json();
+      removeTyping();
+      const bubble = createAIBubble(msgId);
+      bubble.innerHTML = renderAcademicResult(data);
+      scrollBottom();
+      return;
+    }
     if (responseType === 'guardrail_refusal') {
       const data = await res.json();
       removeTyping();
@@ -1048,10 +1317,10 @@ function updateHistoryUI(id, text) {
     item.setAttribute('onclick', `window.loadChat('${id}')`);
     hist.prepend(item);
   }
-  
+
   hist.querySelectorAll('.hist-item').forEach(h => h.classList.remove('active'));
   item.classList.add('active');
-  
+
   item.innerHTML = `<span class="hist-icon"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span><span class="hist-text">${escapeHtml(text.slice(0, 48))}${text.length > 48 ? '…' : ''}</span>`;
 }
 
@@ -1204,4 +1473,3 @@ document.getElementById('messages').addEventListener('click', function(e) {
     lightbox.style.display = 'flex';
   }
 });
-

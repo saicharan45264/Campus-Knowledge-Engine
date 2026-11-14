@@ -7,7 +7,7 @@ import uuid
 
 from neo4j import GraphDatabase
 from pgvector.sqlalchemy import HALFVEC
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -44,7 +44,7 @@ class Document(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # The original name of the uploaded file
     filename = Column(String, nullable=False)
-    # The type of document ("syllabus" or "pyq")
+    # The document category selected by the administrator.
     doc_type = Column(String, nullable=False, default="pyq")
     # The department (for syllabus docs, e.g., "CSE")
     department = Column(String, nullable=True)
@@ -52,8 +52,167 @@ class Document(Base):
     year = Column(String, nullable=True)
     # The academic course code associated with this document (e.g., CSE101)
     course_code = Column(String, nullable=True)
+    # Additional admin-selected scope. Admin metadata remains authoritative.
+    course_name = Column(String, nullable=True)
+    semester = Column(String, nullable=True, index=True)
+    section = Column(String, nullable=True)
     # Timestamp of when the document was uploaded
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class StudentAccount(Base):
+    """Student identity and the authoritative academic scope for personalized retrieval."""
+
+    __tablename__ = "student_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    full_name = Column(String, nullable=False)
+    age = Column(Integer, nullable=False)
+    gender = Column(String, nullable=False)
+    roll_number = Column(String, nullable=False, unique=True, index=True)
+    college_email = Column(String, nullable=False, unique=True, index=True)
+    password_hash = Column(String, nullable=False)
+    department = Column(String, nullable=False, index=True)
+    study_year = Column(String, nullable=False)
+    academic_year = Column(String, nullable=False)
+    semester = Column(String, nullable=False)
+    section = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AcademicDocumentRecord(Base):
+    """Page/line level extracted records for exam, seating, and lab PDFs."""
+
+    __tablename__ = "academic_document_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    record_type = Column(String, nullable=False, index=True)
+    page_number = Column(Integer, nullable=False, default=1)
+    line_number = Column(Integer, nullable=False, default=0)
+    record_text = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=True)
+
+
+class CalendarDay(Base):
+    """One day in an official academic calendar, including overrides and holidays."""
+
+    __tablename__ = "calendar_days"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    calendar_date = Column(DateTime, nullable=False, index=True)
+    day_of_week = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="W")
+    particulars = Column(Text, nullable=True)
+    timetable_override = Column(String, nullable=True)
+    academic_year = Column(String, nullable=True)
+    month_name = Column(String, nullable=True)
+
+
+class CalendarDayCohort(Base):
+    """Cohort class-day counter associated with a calendar date."""
+
+    __tablename__ = "calendar_day_cohorts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    calendar_day_id = Column(UUID(as_uuid=True), ForeignKey("calendar_days.id", ondelete="CASCADE"), nullable=False, index=True)
+    cohort = Column(String, nullable=False, index=True)
+    class_day_number = Column(Integer, nullable=True)
+    is_instruction_day = Column(Boolean, default=True)
+
+
+class AcademicEvent(Base):
+    """A named academic milestone, holiday, or examination period."""
+
+    __tablename__ = "academic_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    start_date = Column(DateTime, nullable=False, index=True)
+    end_date = Column(DateTime, nullable=True)
+    event_category = Column(String, nullable=False, default="milestone")
+    cohort_applicability = Column(String, nullable=True, default="ALL")
+
+
+class TimetableVersion(Base):
+    """Admin-scoped version of a weekly classroom timetable."""
+
+    __tablename__ = "timetable_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    department = Column(String, nullable=False)
+    semester = Column(String, nullable=False)
+    section = Column(String, nullable=False)
+    program = Column(String, nullable=True)
+    building = Column(String, nullable=True)
+    academic_year = Column(String, nullable=True)
+    class_advisors = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class WeeklySession(Base):
+    """Single scheduled teaching/activity period in a timetable."""
+
+    __tablename__ = "weekly_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    timetable_id = Column(UUID(as_uuid=True), ForeignKey("timetable_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    day_of_week = Column(String, nullable=False, index=True)
+    slot_numbers = Column(String, nullable=False)
+    start_time = Column(String, nullable=False)
+    end_time = Column(String, nullable=False)
+    activity_label = Column(String, nullable=False)
+    course_code = Column(String, nullable=True)
+    elective_bucket = Column(String, nullable=True)
+    group_label = Column(String, nullable=True)
+    faculty = Column(String, nullable=True)
+    venue = Column(String, nullable=True)
+
+
+class ElectiveOption(Base):
+    """Course/faculty/venue option attached to a timetable elective bucket."""
+
+    __tablename__ = "elective_options"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    timetable_id = Column(UUID(as_uuid=True), ForeignKey("timetable_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    elective_bucket = Column(String, nullable=False, index=True)
+    course_code = Column(String, nullable=False)
+    course_name = Column(String, nullable=False)
+    faculty = Column(String, nullable=True)
+    venue = Column(String, nullable=True)
+    group_label = Column(String, nullable=True)
+    slot_info = Column(String, nullable=True)
+
+
+class RegulationClause(Base):
+    """Structured regulation clause preserving clause ID, hierarchy and source page."""
+
+    __tablename__ = "regulation_clauses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    clause_id = Column(String, nullable=False, index=True)
+    parent_clause_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=True)
+    clause_text = Column(Text, nullable=False)
+    page_number = Column(Integer, nullable=True)
+    table_data_json = Column(Text, nullable=True)
+
+
+class ClauseReference(Base):
+    """Cross-reference between two clauses in a regulations PDF."""
+
+    __tablename__ = "clause_references"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True)
+    from_clause_id = Column(String, nullable=False, index=True)
+    to_clause_id = Column(String, nullable=False, index=True)
+    reference_context = Column(String, nullable=True)
 
 
 class DocumentChunk(Base):
@@ -146,6 +305,39 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+async def init_auth_schema():
+    """Create the login table independently from document indexing."""
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda sync_conn: User.__table__.create(sync_conn, checkfirst=True))
+
+    # Seed initial user accounts if users table is empty
+    try:
+        import bcrypt
+        from sqlalchemy import func, select
+
+        async with AsyncSessionLocal() as session:
+            count = await session.scalar(select(func.count(User.id)))
+            if count == 0:
+                student_hash = bcrypt.hashpw(b"student123", bcrypt.gensalt(12)).decode("utf-8")
+                admin_hash = bcrypt.hashpw(b"admin123", bcrypt.gensalt(12)).decode("utf-8")
+                demo_student = User(
+                    username="student",
+                    password_hash=student_hash,
+                    role="student",
+                )
+                demo_admin = User(
+                    username="admin",
+                    password_hash=admin_hash,
+                    role="admin",
+                )
+                session.add_all([demo_student, demo_admin])
+                await session.commit()
+                logger.info("Initialized default student and admin user accounts.")
+    except Exception as e:
+        logger.warning("Notice initializing default user accounts: %s", e)
+
+
+
 async def init_db_schema():
     """
     Initializes PostgreSQL tables, vector extensions, HNSW indexes,
@@ -154,14 +346,33 @@ async def init_db_schema():
     Neo4j constraints and indexes are created lazily during PDF ingestion
     so a fresh database starts with zero nodes and zero labels.
     """
+    await init_auth_schema()
+
     # 1. PostgreSQL setup
     async with engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "vector";'))
         await conn.run_sync(Base.metadata.create_all)
+
+        # ``create_all`` creates new tables but does not add columns to an
+        # existing installation. Keep this additive migration safe to rerun.
+        for column_name, column_type in (
+            ("course_name", "TEXT"),
+            ("semester", "TEXT"),
+            ("section", "TEXT"),
+        ):
+            await conn.execute(text(
+                f"ALTER TABLE documents ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            ))
+        # Older databases stored clause references without their source document.
+        await conn.execute(text(
+            "ALTER TABLE clause_references ADD COLUMN IF NOT EXISTS document_id UUID "
+            "REFERENCES documents(id) ON DELETE CASCADE"
+        ))
         
-        # Upgrade legacy vector(768) columns to halfvec(768) if needed, then ensure HNSW & GIN indexes
-        try:
+    # Keep optional index changes in a separate transaction so they cannot roll back required schema updates.
+    try:
+        async with engine.begin() as conn:
             col_types = await conn.execute(text("""
                 SELECT attrelid::regclass::text AS table_name,
                        attname AS column_name,
@@ -206,34 +417,9 @@ async def init_db_schema():
                 CREATE INDEX IF NOT EXISTS idx_chunks_tsv 
                 ON document_chunks USING gin(tsv_content);
             """))
-        except Exception as e:
-            logger.warning("Notice creating database vector and fulltext indexes: %s", e)
-
-    # Seed initial user accounts if users table is empty
-    try:
-        import bcrypt
-        from sqlalchemy import func, select
-
-        async with AsyncSessionLocal() as session:
-            count = await session.scalar(select(func.count(User.id)))
-            if count == 0:
-                student_hash = bcrypt.hashpw(b"student123", bcrypt.gensalt(12)).decode("utf-8")
-                admin_hash = bcrypt.hashpw(b"admin123", bcrypt.gensalt(12)).decode("utf-8")
-                demo_student = User(
-                    username="student",
-                    password_hash=student_hash,
-                    role="student",
-                )
-                demo_admin = User(
-                    username="admin",
-                    password_hash=admin_hash,
-                    role="admin",
-                )
-                session.add_all([demo_student, demo_admin])
-                await session.commit()
-                logger.info("Initialized default student and admin user accounts.")
     except Exception as e:
-        logger.warning("Notice initializing default user accounts: %s", e)
+        logger.warning("Notice creating database vector and fulltext indexes: %s", e)
+
 
 
 def ensure_neo4j_schema(neo4j_driver=None, schema_type: str = "all") -> None:

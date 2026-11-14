@@ -281,50 +281,81 @@ def save_to_neo4j(neo4j_driver, course_code: str, triplets: list[dict]) -> None:
 
 
 async def map_pyq_structured_to_kg(
-    neo4j_driver, structured_questions: list[dict], document_id: str | None = None
-) -> None:
-    """Connects parsed questions to Course, BloomLevel, VisualArtefact, and resolved Topic nodes."""
-    if not structured_questions:
-        return
+    neo4j_driver,
+    structured_questions: list[dict],
+    document_id: str | None = None,
+    course_code: str | None = None,
+    course_name: str | None = None,
+) -> dict[str, int | str]:
+    """Map PYQ questions only to the admin-selected course's syllabus topics.
 
-    c_code_overall = structured_questions[0]["course_code"]
-    course_title = structured_questions[0].get("course_title", "")
-    resolved_code, _ = resolve_course_and_topics(neo4j_driver, c_code_overall, course_title)
-    syllabus_context = fetch_course_topics(neo4j_driver, resolved_code, course_title)
+    Confirmed mappings use one canonical TESTS_TOPIC edge. Lower-confidence
+    matches are stored as provisional SUGGESTED_TOPIC edges. Existing mapper
+    links are replaced on reprocessing, making this operation idempotent.
+    """
+    if not structured_questions:
+        return {"total": 0, "mapped": 0, "suggested": 0, "unmapped": 0}
+
+    # Admin metadata is authoritative. Ignore codes and titles printed in the
+    # PDF when selecting the course syllabus and labeling the question nodes.
+    authoritative_code = (
+        course_code or structured_questions[0].get("course_code") or ""
+    ).strip().upper()
+    authoritative_name = (course_name or "").strip()
+    if not authoritative_code:
+        raise ValueError("PYQ mapping requires the administrator-selected course code.")
+    for question in structured_questions:
+        question["course_code"] = authoritative_code
+        if authoritative_name:
+            question["course_title"] = authoritative_name
+
+    syllabus_context = fetch_course_topics(neo4j_driver, authoritative_code)
     mapping = await semantic_map_questions_to_topics(
-        resolved_code, syllabus_context, structured_questions
+        authoritative_code, syllabus_context, structured_questions
     )
+    # The main-branch mapper returns topic IDs; retain the integration report
+    # shape without presenting its ranking score as a calibrated confidence.
+    mapping = {
+        index: {
+            "status": "mapped",
+            "mappings": [{"topic_id": topic_id, "confidence": None,
+                          "mapping_method": "main_semantic_keyword",
+                          "mapper_version": "github-main"} for topic_id in topic_ids],
+            "suggestions": [], "candidates": [], "mapper_version": "github-main",
+        }
+        for index, topic_ids in mapping.items()
+    }
+    mapped_count = suggested_count = unmapped_count = 0
 
     with neo4j_driver.session() as session:
-        if resolved_code and resolved_code != c_code_overall.upper():
+        for index, question in enumerate(structured_questions):
+            question_id = question["id"]
+            q_text = question.get("question_text") or ""
+            btl = question.get("btl_tag")
+            marks = question.get("marks")
+            has_figure = bool(question.get("has_figure"))
+            co_tag = question.get("co_tag")
+            image_url = question.get("image_url") or ""
+            question_number = question.get("question_number", "")
+            diagram_summary = question.get("diagram_summary", "")
+            diagram_type = question.get("diagram_type", "")
+            map_result = mapping.get(index) or {
+                "status": "unmapped",
+                "mappings": [],
+                "suggestions": [],
+                "candidates": [],
+                "mapper_version": "visionmodel-hybrid-v2",
+                "reason": "The mapper produced no candidate result.",
+            }
+            if map_result.get("mappings"):
+                mapped_count += 1
+            elif map_result.get("suggestions"):
+                suggested_count += 1
+            else:
+                unmapped_count += 1
+
             session.run(
                 """
-                MERGE (c_pyq:Course {code: $pyq_code})
-                SET c_pyq.name = coalesce(nullif(c_pyq.name, ''), $c_title),
-                    c_pyq.title = coalesce(nullif(c_pyq.title, ''), $c_title)
-                WITH c_pyq
-                MATCH (c_syl:Course {code: $syl_code})
-                MERGE (c_pyq)-[:ALIAS_OF]->(c_syl)
-                """,
-                pyq_code=c_code_overall.upper(),
-                c_title=course_title or c_code_overall.upper(),
-                syl_code=resolved_code,
-            )
-
-        for i, q in enumerate(structured_questions):
-            q_id = q["id"]
-            q_text = q["question_text"]
-            btl = q["btl_tag"]
-            marks = q["marks"]
-            has_fig = q["has_figure"]
-            co_tag = q["co_tag"]
-            c_code = q["course_code"].upper()
-            image_url = q.get("image_url", "")
-            q_num = q.get("question_number", "")
-            diag_summary = q.get("diagram_summary", "")
-            diag_type = q.get("diagram_type", "")
-
-            query = """
                 MERGE (q:Question {id: $q_id})
                 SET q.q_id = $q_id,
                     q.text = $q_text,
@@ -336,29 +367,40 @@ async def map_pyq_structured_to_kg(
                     q.diagram_type = $diag_type,
                     q.document_id = $doc_id,
                     q.course_code = $c_code,
-                    q.resolved_course_code = $resolved_code,
+                    q.resolved_course_code = $c_code,
+                    q.mapping_status = $mapping_status,
+                    q.mapping_reason = $mapping_reason,
+                    q.mapping_candidates_json = $candidates_json,
+                    q.mapper_version = $mapper_version,
                     q.question_number = $q_num
                 MERGE (c:Course {code: $c_code})
                 ON CREATE SET c.name = coalesce(nullif($c_title, ''), $c_code),
                               c.title = coalesce(nullif($c_title, ''), $c_code)
                 MERGE (q)-[:BELONGS_TO]->(c)
                 MERGE (c)-[:TESTED_BY]->(q)
-            """
-            session.run(
-                query,
-                q_id=q_id,
+                """,
+                q_id=question_id,
                 q_text=q_text,
                 btl=btl,
                 marks=marks,
-                has_fig=has_fig,
-                c_code=c_code,
-                c_title=course_title,
-                resolved_code=resolved_code,
+                has_fig=has_figure,
+                c_code=authoritative_code,
+                c_title=authoritative_name or authoritative_code,
                 image_url=image_url,
-                diag_summary=diag_summary,
-                diag_type=diag_type,
+                diag_summary=diagram_summary,
+                diag_type=diagram_type,
                 doc_id=str(document_id) if document_id else "",
-                q_num=q_num,
+                q_num=question_number,
+                mapping_status=map_result.get("status", "unmapped"),
+                mapping_reason=map_result.get("reason", ""),
+                candidates_json=json.dumps(map_result.get("candidates", []), ensure_ascii=False),
+                mapper_version=map_result.get("mapper_version", "visionmodel-hybrid-v2"),
+            )
+
+            # Remove old confirmed, provisional, and legacy duplicate edges.
+            session.run(
+                "MATCH (q:Question {id: $q_id})-[r:TESTS|TESTS_TOPIC|SUGGESTED_TOPIC]->() DELETE r",
+                q_id=question_id,
             )
 
             if btl:
@@ -368,12 +410,12 @@ async def map_pyq_structured_to_kg(
                     MERGE (bl:BloomLevel {level: $btl})
                     MERGE (q)-[:HAS_BTL]->(bl)
                     """,
-                    q_id=q_id,
+                    q_id=question_id,
                     btl=str(btl).upper(),
                 )
 
-            if image_url and image_url != "None":
-                img_hash = q.get("image_hash") or hashlib.md5(image_url.encode()).hexdigest()
+            if image_url:
+                image_hash = question.get("image_hash") or hashlib.md5(image_url.encode()).hexdigest()
                 session.run(
                     """
                     MATCH (q:Question {id: $q_id})
@@ -384,25 +426,46 @@ async def map_pyq_structured_to_kg(
                         va.diagram_type = $diag_type
                     MERGE (q)-[:BINDS_DIAGRAM]->(va)
                     """,
-                    q_id=q_id,
+                    q_id=question_id,
                     image_url=image_url,
-                    hash=img_hash,
-                    diag_summary=diag_summary,
-                    diag_type=diag_type,
+                    hash=image_hash,
+                    diag_summary=diagram_summary,
+                    diag_type=diagram_type,
                 )
 
-            topic_ids = mapping.get(i, [])
-            for t_id in topic_ids:
-                session.run(
-                    """
-                    MATCH (q:Question {id: $q_id})
-                    MATCH (t:Topic {topic_id: $t_id})
-                    MERGE (q)-[:TESTS]->(t)
-                    MERGE (q)-[:TESTS_TOPIC]->(t)
-                    """,
-                    q_id=q_id,
-                    t_id=t_id,
-                )
+            for relation_type, candidates, review_status in (
+                ("TESTS_TOPIC", map_result.get("mappings", []), "auto_approved"),
+                ("SUGGESTED_TOPIC", map_result.get("suggestions", []), "suggested"),
+            ):
+                for candidate in candidates:
+                    session.run(
+                        f"""
+                        MATCH (q:Question {{id: $q_id}})
+                        MATCH (c:Course {{code: $c_code}})-[:HAS_UNIT]->(:Unit)-[:HAS_TOPIC]->(t:Topic {{topic_id: $t_id}})
+                        MERGE (q)-[r:{relation_type}]->(t)
+                        SET r.confidence = $confidence,
+                            r.semantic_score = $semantic_score,
+                            r.keyword_score = $keyword_score,
+                            r.evidence = $evidence,
+                            r.mapping_method = $mapping_method,
+                            r.mapper_version = $mapper_version,
+                            r.review_status = $review_status
+                        """,
+                        q_id=question_id,
+                        c_code=authoritative_code,
+                        t_id=candidate["topic_id"],
+                        confidence=candidate["confidence"],
+                        semantic_score=candidate.get("semantic_score", 0.0),
+                        keyword_score=candidate.get("keyword_score", 0.0),
+                        evidence=candidate.get("evidence", ""),
+                        mapping_method=candidate.get(
+                            "mapping_method", "visionmodel_semantic_keyword_hybrid"
+                        ),
+                        mapper_version=candidate.get(
+                            "mapper_version", map_result.get("mapper_version", "")
+                        ),
+                        review_status=review_status,
+                    )
 
             if co_tag:
                 session.run(
@@ -413,10 +476,17 @@ async def map_pyq_structured_to_kg(
                     MERGE (q)-[:MAPPED_TO_CO]->(co)
                     MERGE (co)-[:BELONGS_TO]->(c)
                     """,
-                    q_id=q_id,
-                    c_code=c_code,
+                    q_id=question_id,
+                    c_code=authoritative_code,
                     co_id=co_tag,
                 )
+
+    return {
+        "total": len(structured_questions),
+        "mapped": mapped_count,
+        "suggested": suggested_count,
+        "unmapped": unmapped_count,
+    }
 
 
 def expand_subgraph_context(neo4j_driver, query_term: str) -> dict:

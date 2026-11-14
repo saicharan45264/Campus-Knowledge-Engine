@@ -283,6 +283,11 @@ async def hybrid_search_rrf(
     rrf_k: int = 60,
     course_code: str | None = None,
     content_type_filter: str | None = None,
+    department: str | None = None,
+    semester: str | None = None,
+    section: str | None = None,
+    doc_type: str | None = None,
+    document_id=None,
 ) -> list[dict]:
     """Perform Reciprocal Rank Fusion over halfvec dense vectors + OR-relaxed GIN fulltext."""
     if not query_embedding:
@@ -291,6 +296,10 @@ async def hybrid_search_rrf(
     embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
     or_query = _build_or_tsquery(query_text)
     c_code = course_code.upper().strip() if course_code else None
+    dept = department.upper().strip() if department else None
+    sem = semester.upper().strip() if semester else None
+    sec = section.upper().strip() if section else None
+    document_type = doc_type.lower().strip() if doc_type else None
 
     sql_query = text("""
         WITH vector_ranked AS (
@@ -299,8 +308,25 @@ async def hybrid_search_rrf(
                    ROW_NUMBER() OVER (ORDER BY embedding <=> CAST(:embedding AS halfvec(768))) AS rank
             FROM document_chunks
             WHERE embedding IS NOT NULL
-              AND (:ct_filter IS NULL OR content_type = :ct_filter)
-              AND (:c_code IS NULL OR upper(coalesce(course_code, '')) = :c_code)
+              AND (CAST(:ct_filter AS TEXT) IS NULL OR content_type = :ct_filter)
+              AND (CAST(:c_code AS TEXT) IS NULL OR upper(coalesce(course_code, '')) = :c_code)
+              AND (CAST(:dept AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.department, '')) = :dept
+              ))
+              AND (CAST(:sem AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.semester, '')) = :sem
+              ))
+              AND (CAST(:sec AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.section, '')) = :sec
+              ))
+              AND (CAST(:document_id AS UUID) IS NULL OR document_chunks.document_id = CAST(:document_id AS UUID))
+              AND (CAST(:doc_type AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND lower(coalesce(d.doc_type, '')) = :doc_type
+              ))
             ORDER BY embedding <=> CAST(:embedding AS halfvec(768))
             LIMIT 50
         ),
@@ -311,8 +337,25 @@ async def hybrid_search_rrf(
                  to_tsquery('english', :or_query) query
             WHERE :or_query <> ''
               AND tsv_content @@ query
-              AND (:ct_filter IS NULL OR content_type = :ct_filter)
-              AND (:c_code IS NULL OR upper(coalesce(course_code, '')) = :c_code)
+              AND (CAST(:ct_filter AS TEXT) IS NULL OR content_type = :ct_filter)
+              AND (CAST(:c_code AS TEXT) IS NULL OR upper(coalesce(course_code, '')) = :c_code)
+              AND (CAST(:dept AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.department, '')) = :dept
+              ))
+              AND (CAST(:sem AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.semester, '')) = :sem
+              ))
+              AND (CAST(:sec AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND upper(coalesce(d.section, '')) = :sec
+              ))
+              AND (CAST(:document_id AS UUID) IS NULL OR document_chunks.document_id = CAST(:document_id AS UUID))
+              AND (CAST(:doc_type AS TEXT) IS NULL OR EXISTS (
+                    SELECT 1 FROM documents d WHERE d.id = document_chunks.document_id
+                    AND lower(coalesce(d.doc_type, '')) = :doc_type
+              ))
             ORDER BY ts_rank_cd(tsv_content, query) DESC
             LIMIT 50
         ),
@@ -334,17 +377,23 @@ async def hybrid_search_rrf(
     """)
 
     try:
-        result = await db.execute(
-            sql_query,
-            {
-                "embedding": embedding_str,
-                "or_query": or_query,
-                "rrf_k": rrf_k,
-                "k": k,
-                "c_code": c_code,
-                "ct_filter": content_type_filter,
-            },
-        )
+        async with db.begin_nested():
+            result = await db.execute(
+                sql_query,
+                {
+                    "embedding": embedding_str,
+                    "or_query": or_query,
+                    "rrf_k": rrf_k,
+                    "k": k,
+                    "c_code": c_code,
+                    "ct_filter": content_type_filter,
+                    "dept": dept,
+                    "sem": sem,
+                    "sec": sec,
+                    "doc_type": document_type,
+                    "document_id": document_id,
+                },
+            )
         chunks = [
             {
                 "id": row.id,
@@ -356,12 +405,6 @@ async def hybrid_search_rrf(
             }
             for row in result
         ]
-        # If filtered by course_code returned 0 chunks, automatically retry unfiltered
-        if not chunks and c_code is not None:
-            return await hybrid_search_rrf(
-                db, query_text, query_embedding, k=k, rrf_k=rrf_k,
-                course_code=None, content_type_filter=content_type_filter,
-            )
         return chunks
     except Exception as e:
         logger.warning("Hybrid search RRF notice: %s", e)

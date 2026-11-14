@@ -1,15 +1,10 @@
-"""backend/services/topic_mapper.py — Title-resolved, multimodal & tie-broken topic mapper.
-
-Maps exam questions cleanly to Neo4j curriculum Topic nodes via:
-  1. Course-code + normalized course-title alias resolution (e.g. 23CSE104 -> 23EEE104)
-  2. Batched EmbeddingGemma-2 topic & joint text+diagram embeddings + acronym expansion
-  3. Selective gemma4 tie-breaker only on low-margin / ambiguous top candidates
-"""
+"""Course-scoped semantic and lexical mapping from PYQ questions to syllabus topics."""
 from __future__ import annotations
 
 import json
 import logging
 import re
+from typing import Any
 
 from backend.config import settings
 from backend.core.http_client import GPU_SEMAPHORE, get_shared_http_client
@@ -140,8 +135,16 @@ def resolve_course_and_topics(
 
 
 def fetch_course_topics(neo4j_driver, course_code: str, course_title: str = "") -> str:
-    """Fetch formatted Unit and Topic nodes for a course (with title alias resolution)."""
-    _, records = resolve_course_and_topics(neo4j_driver, course_code, course_title)
+    """Fetch topics only from the exact admin-selected course code."""
+    with neo4j_driver.session() as session:
+        records = session.run(
+            """
+            MATCH (c:Course {code: $c_code})-[:HAS_UNIT]->(u:Unit)-[:HAS_TOPIC]->(t:Topic)
+            RETURN u.title AS unit, t.topic_id AS topic_id, t.name AS topic_name
+            ORDER BY u.number, t.order
+            """,
+            c_code=(course_code or "").strip().upper(),
+        ).data()
     if not records:
         return "No syllabus found."
     return "\n".join(
