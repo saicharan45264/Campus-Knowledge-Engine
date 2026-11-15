@@ -86,9 +86,10 @@ export function docTypeChanged() {
   const visible = id => { document.getElementById(id).style.display = 'block'; };
   const hidden = id => { document.getElementById(id).style.display = 'none'; };
   const needsDept = ['syllabus', 'pyq', 'timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
-  const needsYear = ['syllabus', 'pyq', 'timetable'].includes(docType);
+  const needsYear = ['syllabus', 'timetable'].includes(docType);
   const needsSemester = ['timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
-  const needsCourse = docType === 'pyq';
+  const needsCourseCode = docType === 'pyq';
+  const needsCourseName = false;
   const needsSection = docType === 'timetable';
 
   const allDepartmentsOption = document.querySelector('#dept option[data-combined-scope="all"]');
@@ -105,8 +106,8 @@ export function docTypeChanged() {
 
   (needsDept ? visible : hidden)('dept-field');
   (needsYear ? visible : hidden)('year-field');
-  (needsCourse ? visible : hidden)('course-code-field');
-  (needsCourse ? visible : hidden)('course-name-field');
+  (needsCourseCode ? visible : hidden)('course-code-field');
+  (needsCourseName ? visible : hidden)('course-name-field');
   (needsSemester ? visible : hidden)('semester-field');
   (needsSection ? visible : hidden)('section-field');
   const yearLabel = document.getElementById('year-label');
@@ -144,11 +145,11 @@ export async function doUpload() {
   }
 
   const needsDept = ['syllabus', 'pyq', 'timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
-  const needsYear = ['syllabus', 'pyq', 'timetable'].includes(docType);
-  const needsCourse = docType === 'pyq';
+  const needsYear = ['syllabus', 'timetable'].includes(docType);
+  const needsCourseCode = docType === 'pyq';
   const needsSemester = ['timetable', 'exam_schedule', 'seating_arrangement', 'lab_timetable'].includes(docType);
   const needsSection = docType === 'timetable';
-  const missing = (needsDept && !dept) || (needsYear && !year) || (needsCourse && (!code || !courseName)) || (needsSemester && !semester) || (needsSection && !section);
+  const missing = (needsDept && !dept) || (needsYear && !year) || (needsCourseCode && !code) || (needsSemester && !semester) || (needsSection && !section);
   if (missing) {
     const errMsg = document.getElementById('upload-error-msg');
     errMsg.textContent = 'Complete the required document scope fields before uploading.';

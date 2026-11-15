@@ -109,7 +109,7 @@ def _validate_upload_scope(
     """Validate admin-provided document scope before saving any upload."""
     required: dict[str, tuple[str | None, ...]] = {
         "syllabus": (department, year),
-        "pyq": (department, year, course_code, course_name),
+        "pyq": (department, course_code),
         "timetable": (department, year, semester, section),
         "exam_schedule": (department, semester),
         "seating_arrangement": (department, semester),
@@ -119,7 +119,7 @@ def _validate_upload_scope(
     }
     labels = {
         "syllabus": "department and academic year",
-        "pyq": "department, academic year, course code, and course name",
+        "pyq": "department and course code",
         "timetable": "department, academic year, semester, and class/section",
         "exam_schedule": "department and semester",
         "seating_arrangement": "department and semester",
