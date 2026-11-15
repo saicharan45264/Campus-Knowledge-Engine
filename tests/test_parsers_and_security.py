@@ -42,7 +42,7 @@ def test_storage_service_path_traversal_sanitization(tmp_path, monkeypatch):
 
 def test_pyq_structured_parser_on_real_pdf():
     """Verify extract_pyq_structured extracts questions cleanly from a test syllabus PDF."""
-    pdf_path = "docs/test_docs/23CSE312/19CSE312_VI Sem Mid-Term_Even 2024.pdf"
+    pdf_path = "tests/test_data/19CSE312_VI Sem Mid-Term_Even 2024.pdf"
     if not os.path.exists(pdf_path):
         pytest.skip(f"Test PDF {pdf_path} not found.")
 
@@ -124,7 +124,7 @@ async def test_fetch_problems_guards_missing_fulltext_index():
 
 def test_pyq_23cse104_part_marks_btl_and_footer_trim():
     """Verify 23CSE104 PYQ extracts Part-header marks, [ BTL 2], course_title, and trims footer."""
-    pdf_path = Path("docs/model input docs/23CSE104_I Sem Mid-Term_Odd 2023.pdf")
+    pdf_path = Path("tests/test_data/23CSE104_I Sem Mid-Term_Odd 2023.pdf")
     if not pdf_path.exists():
         pytest.skip("Sample PYQ PDF not present in workspace")
 
@@ -168,7 +168,7 @@ def test_syllabus_parser_avp_eval_and_chunks():
         set_live_doc,
     )
 
-    pdf_path = Path("docs/model input docs/B.Tech CSE - 2023 Curriculum.pdf")
+    pdf_path = Path("tests/test_data/B.Tech CSE - 2023 Curriculum.pdf")
     if not pdf_path.exists():
         pytest.skip("Curriculum PDF not present in workspace")
 

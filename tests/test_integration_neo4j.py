@@ -8,21 +8,31 @@ from backend.database import get_neo4j
 from backend.services.graph_service import fetch_problems_by_topic_graph
 
 
+def _get_neo4j_or_skip():
+    driver = get_neo4j()
+    try:
+        driver.verify_connectivity()
+    except Exception as e:
+        pytest.skip(f"Neo4j database is unavailable: {e}")
+    return driver
+
+
 @pytest.mark.asyncio
 async def test_neo4j_driver_connection():
-    driver = get_neo4j()
+    driver = _get_neo4j_or_skip()
     # verify connection by executing a simple query
     with driver.session() as session:
         result = session.run("RETURN 1 as num")
         record = result.single()
         assert record["num"] == 1
 
+
 @pytest.mark.asyncio
 async def test_full_pipeline_to_graph_rag():
-    driver = get_neo4j()
+    driver = _get_neo4j_or_skip()
     intent = await classify_query_intent("give me a list of practice problems on superposition theorem")
     assert intent == "PROBLEM_LIST"
-    
+
     # We won't assert output length since DB might be empty in CI,
     # but we ensure the function runs without throwing exceptions.
     problems = await fetch_problems_by_topic_graph(driver, "superposition theorem")
@@ -33,7 +43,7 @@ def test_syllabus_write_merges_existing_course_node():
     """Verify _write_neo4j merges onto existing Course nodes (e.g. from PREREQUISITE_MAP) without constraint error."""
     from backend.parsers.syllabus_parser import _write_neo4j
 
-    driver = get_neo4j()
+    driver = _get_neo4j_or_skip()
     test_code = "99TEST101"
     sv_id = "TEST_9999"
 

@@ -1,10 +1,9 @@
 """Parsers for scoped lab timetables, seating plans, and exam schedules."""
-import json
 import re
 from typing import Any
 
-import fitz
 import pdfplumber
+import pymupdf as fitz
 
 SLOTS = {
     1: ("08:00 AM", "08:50 AM"), 2: ("08:50 AM", "09:40 AM"),
@@ -129,10 +128,10 @@ def _ocr_page_line_data(page: fitz.Page) -> list[dict[str, Any]]:
         for group in row_groups.values():
             row_text = " ".join(item["text"] for item in group)
             date_match = re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]20\d{2}\b", row_text)
-            sessions = sorted({value.upper() for value in re.findall(r"\b(FN|AN)\b", row_text, re.I)})
+            sessions = sorted({value.upper() for value in re.findall(r"\b(FN|AN)\b", row_text, re.IGNORECASE)})
             weekday = next(
                 (day.title() for day in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-                 if re.search(rf"\b{day}\b", row_text, re.I)),
+                 if re.search(rf"\b{day}\b", row_text, re.IGNORECASE)),
                 None,
             )
             for item in group:
@@ -140,7 +139,7 @@ def _ocr_page_line_data(page: fitz.Page) -> list[dict[str, Any]]:
                 item["table_row_sessions"] = sessions
                 item["table_row_weekday"] = weekday
                 item["table_row_text"] = row_text
-                item["table_header_text"] = row_text if re.search(r"\bdate\b", row_text, re.I) and re.search(r"\bsession\b", row_text, re.I) else None
+                item["table_header_text"] = row_text if re.search(r"\bdate\b", row_text, re.IGNORECASE) and re.search(r"\bsession\b", row_text, re.IGNORECASE) else None
                 item["table_column_rules"] = column_rules
     return line_data
 
@@ -232,7 +231,7 @@ def _scope_exam_page_lines(line_data: list[dict[str, Any]], department: str) -> 
     if column is None:
         has_department_header = any(
             "date" in item.get("table_header_text", "").casefold()
-            and re.search(r"\b(?:CSE|CYS|ARE|CHE|AEE|MEE|ECE|CCE|EEE|ELC|AIE|AID|CIE|MECH)\b", item.get("table_header_text", ""), re.I)
+            and re.search(r"\b(?:CSE|CYS|ARE|CHE|AEE|MEE|ECE|CCE|EEE|ELC|AIE|AID|CIE|MECH)\b", item.get("table_header_text", ""), re.IGNORECASE)
             for item in line_data
         )
         return [] if has_department_header else None
@@ -253,8 +252,8 @@ def _scope_exam_page_lines(line_data: list[dict[str, Any]], department: str) -> 
     # Life Skills is printed in a cell spanning every department. Humanities
     # and Law papers can appear in only one department's column, so they must
     # stay scoped to their actual table column.
-    shared_code = re.compile(r"\b(?:\d{2})?LSE\d{3}[A-Z]?\b", re.I)
-    any_course_code = re.compile(r"\b(?:\d{2})?[A-Z]{3,4}\d{3,4}[A-Z]?\b", re.I)
+    shared_code = re.compile(r"\b(?:\d{2})?LSE\d{3}[A-Z]?\b", re.IGNORECASE)
+    any_course_code = re.compile(r"\b(?:\d{2})?[A-Z]{3,4}\d{3,4}[A-Z]?\b", re.IGNORECASE)
     for row_index, group in groups.items():
         if row_index == header_row:
             continue
@@ -305,16 +304,16 @@ def _parse_lab_timetable(path: str, department: str, semester: str) -> dict[str,
         for page_no, page in enumerate(pdf.pages, 1):
             page_text = page.extract_text() or ""
             if not metadata["location"]:
-                heading = re.search(r"Academic\s+Block\s*[- ]?\s*(\d+)\s+(Ground|First|Second|Third|Fourth)\s+Floor", page_text, re.I)
+                heading = re.search(r"Academic\s+Block\s*[- ]?\s*(\d+)\s+(Ground|First|Second|Third|Fourth)\s+Floor", page_text, re.IGNORECASE)
                 if heading:
                     metadata["location"] = f"Academic Block-{heading.group(1)}, {heading.group(2).title()} Floor"
-                room = re.search(r"\b(IT\s*Lab\s*[-–]?\s*I)\s*\(([^)]+)\)", page_text, re.I)
+                room = re.search(r"\b(IT\s*Lab\s*[-–]?\s*I)\s*\(([^)]+)\)", page_text, re.IGNORECASE)
                 if room:
                     metadata["facility"], metadata["room"] = room.group(1).strip(), room.group(2).strip()
-                capacity = re.search(r"\[(\d+)\s+(?:desktop\s+)?(?:PCs|systems|computers)\]", page_text, re.I)
+                capacity = re.search(r"\[(\d+)\s+(?:desktop\s+)?(?:PCs|systems|computers)\]", page_text, re.IGNORECASE)
                 if capacity:
                     metadata["capacity"] = int(capacity.group(1))
-                term = re.search(r"\b(EVEN|ODD)\s+SEMESTER\s+LAB\s+TIMETABLE\s+(20\d{2})\s*[-–]\s*(20\d{2})", page_text, re.I)
+                term = re.search(r"\b(EVEN|ODD)\s+SEMESTER\s+LAB\s+TIMETABLE\s+(20\d{2})\s*[-–]\s*(20\d{2})", page_text, re.IGNORECASE)
                 if term:
                     metadata["academic_term"] = f"{term.group(1).title()} Semester"
                     metadata["academic_year"] = f"{term.group(2)}–{term.group(3)}"
@@ -377,7 +376,7 @@ def parse_academic_document(path: str, doc_type: str, department: str, semester:
         if doc_type == "exam_schedule" and admin_department in {"ALL", "ALL DEPARTMENTS"}:
             has_dept_header = any(
                 item.get("table_header_text")
-                and re.search(r"\b(?:CSE|CYS|ARE|CHE|AEE|MEE|ECE|CCE|EEE|ELC|AIE|AID|CIE)\b", item["table_header_text"], re.I)
+                and re.search(r"\b(?:CSE|CYS|ARE|CHE|AEE|MEE|ECE|CCE|EEE|ELC|AIE|AID|CIE)\b", item["table_header_text"], re.IGNORECASE)
                 for item in line_data
             )
             if has_dept_header:
@@ -417,7 +416,6 @@ def parse_academic_document(path: str, doc_type: str, department: str, semester:
                 "table_department": item.get("table_department"),
             }
             records.append({"page": page_no, "line": line_no, "text": item["text"], "payload": payload})
-    full_text = "\n".join(full_text_by_page)
     if not records:
         raise ValueError("No readable text was extracted from this PDF.")
     summary = f"{len(records)} OCR/text lines indexed for {department} Semester {semester}."

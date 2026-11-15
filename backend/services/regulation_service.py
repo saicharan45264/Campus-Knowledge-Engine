@@ -5,21 +5,20 @@ Retrieves relevant clauses with parent context and cross-references.
 import asyncio
 import logging
 import re
+from typing import Any
 
 import httpx
-from typing import Dict, Any, List, Optional
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
 
-from backend.database import RegulationClause, ClauseReference, Document
-from backend.services.embedding_service import embed_text, format_query_embedding_text
 from backend.config import settings
 from backend.core.http_client import get_shared_http_client
+from backend.database import ClauseReference, Document, RegulationClause
+from backend.services.embedding_service import embed_text, format_query_embedding_text
 from backend.services.rag_orchestrator import hybrid_search_rrf
 
-
 logger = logging.getLogger(__name__)
-CLAUSE_PATTERN = re.compile(r"\b(R\.\d+(?:\.\d+)*|O\.\d+)\b", re.I)
+CLAUSE_PATTERN = re.compile(r"\b(R\.\d+(?:\.\d+)*|O\.\d+)\b", re.IGNORECASE)
 
 
 def is_regulation_query(question: str) -> bool:
@@ -51,7 +50,7 @@ def _extract_named_subsection(question: str, evidence: list[dict]) -> str | None
     q = normalize(question)
     for clause in evidence:
         text = clause.get("clause_text") or ""
-        headings = list(re.finditer(r"(?<![A-Za-z0-9])([a-z])\)\s*([^:]{5,100}):", text, re.I))
+        headings = list(re.finditer(r"(?<![A-Za-z0-9])([a-z])\)\s*([^:]{5,100}):", text, re.IGNORECASE))
         for index, heading in enumerate(headings):
             title = normalize(heading.group(2))
             if len(title.split()) < 2 or title not in q:
@@ -67,11 +66,11 @@ def _extract_named_subsection(question: str, evidence: list[dict]) -> str | None
 async def answer_regulations_query(
     query_text: str,
     db: AsyncSession,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Retrieves regulation clauses for a question and returns the clauses and source references.
     """
-    matched_clauses: List[Dict[str, Any]] = []
+    matched_clauses: list[dict[str, Any]] = []
     seen_ids = set()
 
     latest_result = await db.execute(
@@ -117,7 +116,7 @@ async def answer_regulations_query(
     if not matched_clauses:
         try:
             q_vec = await asyncio.wait_for(embed_text(format_query_embedding_text(query_text)), timeout=20)
-        except (asyncio.TimeoutError, httpx.HTTPError) as exc:
+        except (TimeoutError, httpx.HTTPError) as exc:
             logger.warning("Regulation embedding unavailable: %s", type(exc).__name__)
             q_vec = []
         chunks = await hybrid_search_rrf(
@@ -133,7 +132,7 @@ async def answer_regulations_query(
             content = chunk.get("content", "")
             # The regulations ingestion format stores the clause ID in every chunk.
             # Keep this case-insensitive because older indexed chunks used varied casing.
-            m = re.search(r"\bClause\s+(O\.\d+|R\.\d+(?:\.\d+)*)", content, re.I)
+            m = re.search(r"\bClause\s+(O\.\d+|R\.\d+(?:\.\d+)*)", content, re.IGNORECASE)
             if not m:
                 continue
             cid = m.group(1).upper()
@@ -286,12 +285,12 @@ async def answer_regulations_query(
                 allowed = {c['clause_id'].upper() for c in evidence}
                 allowed.update(str(c['parent_clause_id']).upper() for c in evidence if c.get('parent_clause_id') and CLAUSE_PATTERN.fullmatch(str(c['parent_clause_id'])))
                 source_text = " ".join(c.get("clause_text") or "" for c in evidence)
-                attendance_threshold = bool(re.search(r"\battendance\b", query_text, re.I) and re.search(r"\b(minimum|required|percentage|threshold)\b", query_text, re.I))
+                attendance_threshold = bool(re.search(r"\battendance\b", query_text, re.IGNORECASE) and re.search(r"\b(minimum|required|percentage|threshold)\b", query_text, re.IGNORECASE))
                 mentions_both_source_thresholds = all(re.search(rf"\b{n}\s*%", source_text) for n in ("75", "100"))
                 misses_required_context = attendance_threshold and mentions_both_source_thresholds and bool(re.search(r"\b75\s*%", generated)) and not re.search(r"\b100\s*%", generated)
-                generated_page_numbers = bool(re.search(r"\bpages?\b|\bp\.\s*\d", generated, re.I))
-                publication_question = bool(re.search(r"\b(distinction)\b", query_text, re.I) and re.search(r"\b(publication|publish|published|paper)\b", query_text, re.I) and re.search(r"\b(required|require|mandatory|necessary)\b", query_text, re.I))
-                publication_clause = next((c for c in evidence if re.search(r"submitted\s*/\s*published", c.get('clause_text') or '', re.I)), None)
+                generated_page_numbers = bool(re.search(r"\bpages?\b|\bp\.\s*\d", generated, re.IGNORECASE))
+                publication_question = bool(re.search(r"\b(distinction)\b", query_text, re.IGNORECASE) and re.search(r"\b(publication|publish|published|paper)\b", query_text, re.IGNORECASE) and re.search(r"\b(required|require|mandatory|necessary)\b", query_text, re.IGNORECASE))
+                publication_clause = next((c for c in evidence if re.search(r"submitted\s*/\s*published", c.get('clause_text') or '', re.IGNORECASE)), None)
                 if publication_question and publication_clause:
                     ans = f"### Publication requirement for distinction\n\n{publication_clause['clause_text']}\n\n*Source: Clause {publication_clause['clause_id']}, page {publication_clause['page_number']}.*"
                 elif generated and not truncated and cited and cited <= allowed and not misses_required_context and not generated_page_numbers:

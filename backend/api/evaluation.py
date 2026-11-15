@@ -15,7 +15,7 @@ from sqlalchemy import text
 from backend.api.auth import require_admin
 from backend.config import settings
 from backend.core.http_client import get_shared_http_client
-from backend.core.telemetry import fetch_aggregated_telemetry
+from backend.core.query_performance_logger import fetch_aggregated_telemetry
 from backend.database import engine, get_neo4j
 
 logger = logging.getLogger("mach_ai.eval")
@@ -83,15 +83,11 @@ async def run_eval_endpoint(
     if category not in _ALLOWED_EVAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Invalid benchmark category.")
 
-    from scripts.eval_benchmark import run_benchmark
+    from backend.services.evaluation_benchmark import run_benchmark
 
     summary = await run_benchmark(category_filter=category)
 
-    bench_file = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "scripts",
-        "benchmark_results.json",
-    )
+    bench_file = os.path.join(settings.uploads_dir, "benchmark_results.json")
     try:
         os.makedirs(os.path.dirname(bench_file), exist_ok=True)
         with open(bench_file, "w") as f:
@@ -109,15 +105,17 @@ async def get_eval_metrics_endpoint(
     """Returns aggregated evaluation radar metrics and runtime query_logs telemetry."""
     telemetry = await fetch_aggregated_telemetry()
 
-    bench_file = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    bench_file = os.path.join(settings.uploads_dir, "benchmark_results.json")
+    fallback_bench_file = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
         "scripts",
         "benchmark_results.json",
     )
     benchmark_data = None
-    if os.path.exists(bench_file):
+    target_path = bench_file if os.path.exists(bench_file) else fallback_bench_file
+    if os.path.exists(target_path):
         try:
-            with open(bench_file, "r") as f:
+            with open(target_path) as f:
                 benchmark_data = json.load(f)
         except Exception as e:
             logger.warning("Error reading benchmark results: %s", e)

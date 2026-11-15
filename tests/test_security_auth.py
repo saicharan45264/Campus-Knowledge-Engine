@@ -11,7 +11,10 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from backend.core.guardrails import sanitize_retrieved_context, sanitize_student_query
+from backend.core.query_safety_filter import (
+    sanitize_retrieved_context,
+    sanitize_student_query,
+)
 from backend.main import _create_token, app
 
 
@@ -218,6 +221,18 @@ async def test_eval_run_rejects_invalid_category(client, admin_token):
         json={"category": "nonexistent_cat"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_eval_metrics_endpoint(client, admin_token):
+    """Validates /eval/metrics returns telemetry and benchmark structure."""
+    resp = await client.get(
+        "/eval/metrics",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "telemetry" in data
 
 
 @pytest.mark.asyncio

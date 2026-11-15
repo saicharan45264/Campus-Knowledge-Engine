@@ -37,6 +37,7 @@ venv.bak/
 # ── Caches & Test Frameworks ──
 .ruff_cache/
 .pytest_cache/
+tests/cache/
 .mypy_cache/
 backend/cache/
 htmlcov/
@@ -58,6 +59,7 @@ htmlcov/
 uploads/
 backend/uploads/
 *.pdf
+!tests/test_data/*.pdf
 *.pptx
 *.dump
 

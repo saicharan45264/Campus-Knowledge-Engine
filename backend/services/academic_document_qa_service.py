@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -15,7 +15,6 @@ from backend.services.date_resolution import extract_date_from_text
 from backend.services.embedding_service import embed_text
 from backend.services.rag_orchestrator import hybrid_search_rrf
 
-
 SEMESTER_NUMBER = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8}
 _DEPT_PREFIXES = {"MECH": ("MEE", "MECH")}
 _DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -24,13 +23,12 @@ _STOP = {
     "is", "are", "on", "in", "of", "to", "and", "does", "do", "my", "our", "this", "that",
     "schedule", "scheduled", "exam", "exams", "examination", "examinations", "course", "courses", "date", "day", "session",
     "semester", "sem", "january", "february", "march", "april", "may", "june", "july", "august",
-    "september", "october", "november", "december", "2025", "2026", "2027", "fn", "an", "morning", "dates", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "saturdays", "sunday", "conducted",
+    "september", "october", "november", "december", "2025", "2026", "2027", "fn", "morning", "dates", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "saturdays", "sunday", "conducted",
     "afternoon", "btech", "tech", "year", "first", "second", "third", "fourth", "fifth", "sixth",
     "seventh", "eighth", "even", "odd", "all", "any", "between", "from", "through", "until",
-    "list", "please", "are", "there", "happening", "happen", "held", "events", "forenoon", "afternoon",
-    "listed", "tell", "occur", "taking", "place", "branch", "branches", "department", "departments", "departmental", "students", "student", "common", "core", "extending", "up", "have", "has", "which", "complete", "full", "entire", "all", "sixth", "six", "seventh", "eighth", "professional", "elective", "electives", "open", "offered", "offerings", "computer", "science", "engineering", "code", "share", "shared", "strictly", "subject", "subjects", "examined", "papers", "notification", "window", "start", "starts", "begin", "begins", "end", "ends", "conclude", "concludes", "finish", "finishes", "civil", "chemical", "aerospace", "automation", "robotics", "electrical", "cse", "cys", "eee", "ece", "elc", "mee", "mech", "aie", "aid", "cce", "cie", "che", "aee", "are",
+    "list", "please", "there", "happening", "happen", "held", "events", "forenoon", "listed", "tell", "occur", "taking", "place", "branch", "branches", "department", "departments", "departmental", "students", "student", "common", "core", "extending", "up", "have", "has", "complete", "full", "entire", "six", "professional", "elective", "electives", "open", "offered", "offerings", "computer", "science", "engineering", "code", "share", "shared", "strictly", "subject", "subjects", "examined", "papers", "notification", "window", "start", "starts", "begin", "begins", "end", "ends", "conclude", "concludes", "finish", "finishes", "civil", "chemical", "aerospace", "automation", "robotics", "electrical", "cse", "cys", "eee", "ece", "elc", "mee", "mech", "aie", "aid", "cce", "cie", "che", "aee",
 }
-_COURSE_CODE_RE = re.compile(r"\b((?:\d{2})?[A-Z]{3,4}\d{3,4}[A-Z]?)\b", re.I)
+_COURSE_CODE_RE = re.compile(r"\b((?:\d{2})?[A-Z]{3,4}\d{3,4}[A-Z]?)\b", re.IGNORECASE)
 _DEPARTMENT_ALIASES = {"MECH": ("MECH", "MEE"), "MEE": ("MECH", "MEE")}
 _KNOWN_DEPARTMENTS = ("CSE", "CYS", "ARE", "CHE", "AEE", "MEE", "ECE", "CCE", "EEE", "ELC", "AIE", "AID", "CIE", "MECH")
 _DEPARTMENT_PHRASES = {
@@ -44,13 +42,13 @@ _DEPARTMENT_PHRASES = {
     "ELECTRICAL": ("EEE", "ELC"), "ELECTRICAL ENGINEERING": ("EEE", "ELC"),
 }
 
-_SEAT_HALL_RE = re.compile(r"\b([A-Z])\s*[-–]\s*(\d{3})\b", re.I)
+_SEAT_HALL_RE = re.compile(r"\b([A-Z])\s*[-–]\s*(\d{3})\b", re.IGNORECASE)
 _SEAT_RANGE_RE = re.compile(
     r"(?:CB\s*[.]?\s*EN\s*[.]?\s*U4\s*)?"
     r"(CSE|CYS|EEE|ECE|ELC|MEE|CCE|CIE|ARE|CHE|AEE|AIE)\s*(\d{2})(\d{3})"
-    r"\s*[-–]\s*(\d{2,5})\b", re.I,
+    r"\s*[-–]\s*(\d{2,5})\b", re.IGNORECASE,
 )
-_ROLL_RE = re.compile(r"\bCB\s*[.]?\s*EN\s*[.]?\s*U4\s*(CSE|CYS|EEE|ECE|ELC|MEE|CCE|CIE|ARE|CHE|AEE|AIE)\s*(\d{5})\b", re.I)
+_ROLL_RE = re.compile(r"\bCB\s*[.]?\s*EN\s*[.]?\s*U4\s*(CSE|CYS|EEE|ECE|ELC|MEE|CCE|CIE|ARE|CHE|AEE|AIE)\s*(\d{5})\b", re.IGNORECASE)
 _SEAT_BLOCKS = {
     "I": {"E-201", "E-202", "E-203", "E-209", "E-210", "E-211", "W-209", "W-309", "W-310", "W-401", "W-402"},
     "II": {"A-301", "A-302", "A-303", "B-201", "B-202", "B-203", "B-301", "B-302", "B-303", "C-205"},
@@ -91,7 +89,7 @@ def _is_seating_question(question: str) -> bool:
             and re.search(r"\b(semester|sem)\b", q)
             and not re.search(r"\b(course|code)\b", q))
         or (re.search(r"\b(timing|time|session)\b", q)
-            and re.search(r"\b(FN|AN|forenoon|afternoon|morning session)\b", question, re.I)
+            and re.search(r"\b(FN|AN|forenoon|afternoon|morning session)\b", question, re.IGNORECASE)
             and not re.search(r"\b(slot|timetable|class|course|courses)\b", q))
         or (re.search(r"\b(academic block|across all branches|total candidates)\b", q)
             and re.search(r"\b(department|departments|branch|branches|students|halls?)\b", q))
@@ -188,7 +186,7 @@ def _requested_departments(question: str, default: str) -> list[str]:
     # institution; an unqualified course/timetable request remains profile scoped.
     global_query = bool(re.search(
         r"\b(which branches|which departments|what branches|what departments|all branches|all departments|across all|common to all|every branch|every department|which branches share|which departments share|which branches have|are there any examinations? (?:conducted )?on saturdays?|examinations? (?:conducted )?on saturdays?|who has exams on saturday|which departments? have exams on saturday|which branches? have exams on saturday|which branches have exams extending|which departments have exams extending|which courses are conducted .*afternoon|which courses .* strictly .*afternoon|exam window|start and end|start to finish)\b",
-        question or "", re.I,
+        question or "", re.IGNORECASE,
     ))
     date_only = bool(_query_dates(question)) and not departments and not course_code
     if global_query or date_only:
@@ -222,16 +220,16 @@ def _semester_values(value: str) -> set[str]:
 
 def _requested_semester(query: str) -> int | None:
     ordinal_words = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8}
-    m = re.search(r"\b(?:sem(?:ester)?\s*)([1-8])(?:st|nd|rd|th)?\b", query, re.I)
+    m = re.search(r"\b(?:sem(?:ester)?\s*)([1-8])(?:st|nd|rd|th)?\b", query, re.IGNORECASE)
     if m:
         return int(m.group(1))
-    m = re.search(r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s*(?:semester|sem)\b", query, re.I)
+    m = re.search(r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\s*(?:semester|sem)\b", query, re.IGNORECASE)
     if m:
         return ordinal_words[m.group(1).casefold()]
-    m = re.search(r"\b([1-8])(?:st|nd|rd|th)[- ]*(?:semester|sem)\b", query, re.I)
+    m = re.search(r"\b([1-8])(?:st|nd|rd|th)[- ]*(?:semester|sem)\b", query, re.IGNORECASE)
     if m:
         return int(m.group(1))
-    m = re.search(r"\b(?:sem(?:ester)?\s*)(i{1,3}|iv|v|vi|vii|viii)\b", query, re.I)
+    m = re.search(r"\b(?:sem(?:ester)?\s*)(i{1,3}|iv|v|vi|vii|viii)\b", query, re.IGNORECASE)
     return SEMESTER_NUMBER[m.group(1).upper()] if m else None
 
 
@@ -259,7 +257,7 @@ def _date_in_text(text: str) -> date | None:
         (r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(20\d{2})\b", True),
         (r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)[,]?\s+(20\d{2})\b", False),
     ):
-        match = re.search(pattern, text, re.I)
+        match = re.search(pattern, text, re.IGNORECASE)
         if not match:
             continue
         month_names = {name: number for number, name in enumerate(("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"), 1)}
@@ -283,7 +281,7 @@ def _query_dates(query: str) -> list[date]:
         (rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({months})[,]?(?:\s+(20\d{{2}}))?\b", False),
     )
     for pattern, month_first in named_patterns:
-        for match in re.finditer(pattern, query, re.I):
+        for match in re.finditer(pattern, query, re.IGNORECASE):
             first, second, explicit = match.groups()
             try:
                 month, day = (
@@ -317,11 +315,11 @@ def _query_month_year(query: str) -> tuple[int, int] | None:
     match = re.search(
         r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b",
         query,
-        re.I,
+        re.IGNORECASE,
     )
     if not match:
         return None
-    months = "january february march april may june july august september october november december".split()
+    months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
     return months.index(match.group(1).casefold()) + 1, int(match.group(2))
 
 
@@ -410,11 +408,11 @@ def _filter_exam_pages_by_department(rows: list[dict[str, Any]], department: str
     for key, page in page_rows.items():
         for row in page:
             text = str((row.get("payload") or {}).get("table_header_text") or row["text"])
-            if not (re.search(r"\bdate\b", text, re.I) and re.search(r"\bsession\b", text, re.I)):
+            if not (re.search(r"\bdate\b", text, re.IGNORECASE) and re.search(r"\bsession\b", text, re.IGNORECASE)):
                 continue
             headers = {
                 name for name in _KNOWN_DEPARTMENTS
-                if re.search(rf"\b{re.escape(name)}\b", text, re.I)
+                if re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE)
             }
             if headers:
                 recognized_pages.add(key)
@@ -469,8 +467,8 @@ def _seating_answer(question: str, rows: list[dict[str, Any]], department: str, 
         return {"document_mode": "seating_arrangement", "markdown_answer": "The seating PDF is indexed, but its hall and register-number rows could not be parsed. Reprocess it with OCR enabled to answer these seating lookups."}
     q = question.casefold()
     joined = "\n".join(row["text"] for row in rows)
-    if re.search(r"\b(re[ -]?regist\w*|arrear)\b", q) and re.search(r"\bW\s*[-–]\s*209\b", joined, re.I):
-        return {"document_mode": "seating_arrangement", "title": "Re-registration candidates", "markdown_answer": "Re-registered / arrear candidates are assigned to **Hall W-209, Academic Block I** according to the seating circular.", "records": [row for row in rows if re.search(r"re[ -]?register|arrear|W\s*[-–]\s*209", row["text"], re.I)][:8]}
+    if re.search(r"\b(re[ -]?regist\w*|arrear)\b", q) and re.search(r"\bW\s*[-–]\s*209\b", joined, re.IGNORECASE):
+        return {"document_mode": "seating_arrangement", "title": "Re-registration candidates", "markdown_answer": "Re-registered / arrear candidates are assigned to **Hall W-209, Academic Block I** according to the seating circular.", "records": [row for row in rows if re.search(r"re[ -]?register|arrear|W\s*[-–]\s*209", row["text"], re.IGNORECASE)][:8]}
     explicit_roll = _roll_from_question(question)
     personal_lookup = bool(re.search(r"\b(my|me|where am i|where do i sit|my roll)\b", q))
     roll = explicit_roll or (student_roll_number if personal_lookup else None)
@@ -484,7 +482,7 @@ def _seating_answer(question: str, rows: list[dict[str, Any]], department: str, 
     # Header and issuer questions are answered from extracted source lines.
     if re.search(r"\b(when was|issued|notification|circular date|who issued|issued by|controller)\b", q):
         date_match = re.search(r"\b(\d{1,2}[.]\d{1,2}[.]20\d{2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2})\b", joined)
-        issuer = re.search(r"((?:Dy\.?\s*)?Controller of Examinations)", joined, re.I)
+        issuer = re.search(r"((?:Dy\.?\s*)?Controller of Examinations)", joined, re.IGNORECASE)
         facts = []
         if date_match:
             facts.append(f"**Issue date:** {date_match.group(1)}")
@@ -494,27 +492,27 @@ def _seating_answer(question: str, rows: list[dict[str, Any]], department: str, 
             return {"document_mode": "seating_arrangement", "title": "Seating circular details", "markdown_answer": "### Seating Circular\n\n" + "\n\n".join(facts), "records": rows[:8]}
 
     if re.search(r"\b(when|what are|date|window|between|from|start|end)\b", q) and re.search(r"\b(exam|examination|mid[ -]?term|mid[ -]?sem|window)\b", q):
-        window = re.search(r"\b(?:between\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|through|and|[-–])\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*(20\d{2})\b", joined, re.I)
+        window = re.search(r"\b(?:between\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|through|and|[-–])\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s*(20\d{2})\b", joined, re.IGNORECASE)
         if window:
             return {"document_mode": "seating_arrangement", "title": "Examination window", "markdown_answer": f"The seating circular covers **Semester {semester}** examinations from **{window.group(1)} to {window.group(2)} {window.group(3)} {window.group(4)}**.", "records": rows[:8]}
 
     if re.search(r"\b(timing|time|duration|long|FN|forenoon|morning|AN|afternoon|session)\b", q):
-        session = "FN" if re.search(r"\b(FN|forenoon|morning)\b", q, re.I) else "AN" if re.search(r"\b(AN|afternoon)\b", q, re.I) else None
-        time_matches = list(re.finditer(r"(FN|AN)\s*:?\s*(\d{1,2}[.:]\d{2}\s*(?:am|pm))\s*(?:to|[-–])\s*(\d{1,2}[.:]\d{2}\s*(?:am|pm))", joined, re.I))
+        session = "FN" if re.search(r"\b(FN|forenoon|morning)\b", q, re.IGNORECASE) else "AN" if re.search(r"\b(AN|afternoon)\b", q, re.IGNORECASE) else None
+        time_matches = list(re.finditer(r"(FN|AN)\s*:?\s*(\d{1,2}[.:]\d{2}\s*(?:am|pm))\s*(?:to|[-–])\s*(\d{1,2}[.:]\d{2}\s*(?:am|pm))", joined, re.IGNORECASE))
         time_re = next((m for m in time_matches if m.group(1).upper() == session), None) if session else (time_matches[0] if time_matches else None)
         if time_re:
             duration = "2 hours" if "2" in q or "long" in q or "duration" in q else ""
             label = time_re.group(1).upper()
             return {"document_mode": "seating_arrangement", "title": "Examination session timing", "markdown_answer": f"**{label} session:** {time_re.group(2)} to {time_re.group(3)}" + (f" (**{duration}**)." if duration else "."), "records": rows[:8]}
     if re.search(r"\b(batch|semester|cohort)\b", q) and not re.search(r"\b(roll|register|hall|section|department|students|candidates)\b", q):
-        batch = re.search(r"(20\d{2})\s*batch", joined, re.I)
-        sem = re.search(r"(\d)(?:st|nd|rd|th)\s*sem(?:ester)?[. ]*", joined, re.I)
+        batch = re.search(r"(20\d{2})\s*batch", joined, re.IGNORECASE)
+        sem = re.search(r"(\d)(?:st|nd|rd|th)\s*sem(?:ester)?[. ]*", joined, re.IGNORECASE)
         if batch or sem:
             return {"document_mode": "seating_arrangement", "title": "Covered cohort", "markdown_answer": f"This seating circular covers **{sem.group(1) + 'th semester ' if sem else ''}B.Tech{', ' + batch.group(1) + ' batch' if batch else ''}**.", "records": rows[:8]}
 
     room_matches = {f"{m.group(1).upper()}-{m.group(2)}" for m in _SEAT_HALL_RE.finditer(question)}
     asks_cse_main_blocks = bool(
-        re.search(r"\bCSE\b", question, re.I)
+        re.search(r"\bCSE\b", question, re.IGNORECASE)
         and re.search(r"\b(main\s+)?academic\s+blocks?\b", q)
         and not re.search(r"\bauditorium\b", q)
     )
@@ -537,9 +535,9 @@ def _seating_answer(question: str, rows: list[dict[str, Any]], department: str, 
     else:
         requested_depts = _requested_departments(question, department)
         selected = entries if requested_depts == ["ALL"] else [entry for entry in entries if entry["department"] in requested_depts]
-        sections = {section.upper() for section in re.findall(r"\b(?:section|sec\.?|CSE\s*[- ]?|ECE\s*[- ]?|EEE\s*[- ]?|ELC\s*[- ]?|MEE\s*[- ]?|CYS\s*[- ]?|CCE\s*[- ]?|CHE\s*[- ]?|CIE\s*[- ]?|ARE\s*[- ]?|AEE\s*[- ]?)([A-H])\b", question, re.I)}
-        for section_match in re.finditer(r"\bsections?\b(.{0,50})", question, re.I):
-            sections.update(letter.upper() for letter in re.findall(r"\b([A-H])\b", section_match.group(1), re.I))
+        sections = {section.upper() for section in re.findall(r"\b(?:section|sec\.?|CSE\s*[- ]?|ECE\s*[- ]?|EEE\s*[- ]?|ELC\s*[- ]?|MEE\s*[- ]?|CYS\s*[- ]?|CCE\s*[- ]?|CHE\s*[- ]?|CIE\s*[- ]?|ARE\s*[- ]?|AEE\s*[- ]?)([A-H])\b", question, re.IGNORECASE)}
+        for section_match in re.finditer(r"\bsections?\b(.{0,50})", question, re.IGNORECASE):
+            sections.update(letter.upper() for letter in re.findall(r"\b([A-H])\b", section_match.group(1), re.IGNORECASE))
         if sections:
             selected = [entry for entry in selected if entry.get("section") in sections]
         if not selected and not requested_depts:
@@ -615,7 +613,7 @@ def _date_matches(row: dict[str, Any], target_dates: list[date]) -> bool:
 
 
 def _is_date_range_query(question: str, target_dates: list[date]) -> bool:
-    return len(target_dates) >= 2 and bool(re.search(r"\b(between|from)\b", question, re.I)) and bool(re.search(r"\b(to|through|until|and)\b", question, re.I))
+    return len(target_dates) >= 2 and bool(re.search(r"\b(between|from)\b", question, re.IGNORECASE)) and bool(re.search(r"\b(to|through|until|and)\b", question, re.IGNORECASE))
 
 
 def _row_has_requested_date(
@@ -673,10 +671,10 @@ def _add_schedule_context(rows: list[dict[str, Any]]) -> None:
             current_date = parsed_date
             current_sessions = set()
             current_weekday = parsed_date.strftime("%A")
-        weekday_match = next((day for day in _DAY_NAMES if re.search(rf"\b{day}\b", row["text"], re.I)), None)
+        weekday_match = next((day for day in _DAY_NAMES if re.search(rf"\b{day}\b", row["text"], re.IGNORECASE)), None)
         if weekday_match:
             current_weekday = weekday_match.title()
-        session_markers = set(re.findall(r"\b(FN|AN)\b", row["text"], re.I))
+        session_markers = set(re.findall(r"\b(FN|AN)\b", row["text"], re.IGNORECASE))
         if session_markers:
             current_sessions = {marker.upper() for marker in session_markers}
         row["effective_date"] = current_date
@@ -698,7 +696,7 @@ def _filter_course_segments(
     matches = list(_COURSE_CODE_RE.finditer(text))
     requested_codes = {re.sub(r"[^a-z0-9]+", "", code.casefold()) for code in (requested_code if isinstance(requested_code, list) else [requested_code]) if code}
     if not matches:
-        if _date_in_text(text) or re.search(r"\b(FN|AN|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", text, re.I):
+        if _date_in_text(text) or re.search(r"\b(FN|AN|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", text, re.IGNORECASE):
             return text
         wanted = _tokens(query)
         normalized_text = _normalized_course_text(text)
@@ -719,7 +717,7 @@ def _filter_course_segments(
             r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b.*$",
             "",
             segment,
-            flags=re.I,
+            flags=re.IGNORECASE,
         ).strip(" /|,;:-")
         prefix = re.sub(r"^\d{2}", "", code)
         if requested_codes and re.sub(r"[^a-z0-9]+", "", code.casefold()) in requested_codes:
@@ -763,7 +761,7 @@ def _filter_course_segments(
         # belongs to this department. This prevents other departments' subjects
         # from leaking through a flattened multi-column OCR row.
         prefix = text[:matches[0].start()].strip(" /|,;:-")
-        return prefix if _date_in_text(prefix) or re.search(r"\b(FN|AN|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", prefix, re.I) else ""
+        return prefix if _date_in_text(prefix) or re.search(r"\b(FN|AN|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", prefix, re.IGNORECASE) else ""
     prefix = text[:matches[0].start()].strip(" /|,;:-")
     return " — ".join(part for part in (prefix, " / ".join(selected)) if part)
 
@@ -797,13 +795,13 @@ async def answer_academic_document_query(
         roll_match = _ROLL_RE.search(explicit_roll)
         roll_department = roll_match.group(1).upper() if roll_match else None
     personal_seating_lookup = kind == "seating_arrangement" and bool(
-        explicit_roll or re.search(r"\b(my|me|where am i|where do i sit|my roll)\b", question, re.I)
+        explicit_roll or re.search(r"\b(my|me|where am i|where do i sit|my roll)\b", question, re.IGNORECASE)
     )
     query_semester = str(requested_semester) if requested_semester and kind in {"exam_schedule", "seating_arrangement"} else (semester if personal_seating_lookup else None) if kind == "seating_arrangement" else semester
     query_semester_values = _semester_values(query_semester or "")
     if kind == "seating_arrangement":
         departments = [roll_department] if roll_department else _requested_departments(question, department)
-        if re.search(r"\b(all branches|all departments|across all|every branch|every department|total candidates|across all branches|which branches|which departments|all halls|which exam halls|hall(s)? used|auditorium)\b", question, re.I) or re.search(r"\bacademic\s+block\b", question, re.I) or _SEAT_HALL_RE.search(question):
+        if re.search(r"\b(all branches|all departments|across all|every branch|every department|total candidates|across all branches|which branches|which departments|all halls|which exam halls|hall(s)? used|auditorium)\b", question, re.IGNORECASE) or re.search(r"\bacademic\s+block\b", question, re.IGNORECASE) or _SEAT_HALL_RE.search(question):
             departments = ["ALL"]
     else:
         departments = _requested_departments(question, department) if kind == "exam_schedule" else [department]
@@ -841,8 +839,8 @@ async def answer_academic_document_query(
         # Lab room schedules are often re-uploaded for a new term. Use one
         # matching document revision per query instead of merging stale rows
         # from every historical upload into a single availability answer.
-        room_match = re.search(r"\b([A-Z]{1,3})\s*[-–]?\s*(\d{2,4})\b", question, re.I)
-        facility_match = re.search(r"\b(?:[A-Z0-9]+\s+)?LAB\s*[-–]?\s*(?:[IVX]+|\d+)\b", question, re.I)
+        room_match = re.search(r"\b([A-Z]{1,3})\s*[-–]?\s*(\d{2,4})\b", question, re.IGNORECASE)
+        facility_match = re.search(r"\b(?:[A-Z0-9]+\s+)?LAB\s*[-–]?\s*(?:[IVX]+|\d+)\b", question, re.IGNORECASE)
         if room_match or facility_match:
             wanted_room = re.sub(r"[^A-Z0-9]", "", room_match.group(0).upper()) if room_match else None
             wanted_facility = _normalized_course_text(facility_match.group(0)) if facility_match else None
@@ -859,7 +857,7 @@ async def answer_academic_document_query(
             if matching_groups:
                 rows = max(
                     matching_groups,
-                    key=lambda group: group[0].get("document_created_at") or datetime.min,
+                    key=lambda group: group[0].get("document_created_at") or datetime.min.replace(tzinfo=UTC),
                 )
         else:
             # Without a room identifier, select the latest upload. This avoids
@@ -880,10 +878,10 @@ async def answer_academic_document_query(
     code = _course_code(question)
     course_codes = re.findall(r"\b\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?\b", question.upper())
     target_dates = _query_dates(question)
-    weekday = next((day.title() for day in _DAY_NAMES if re.search(rf"\b{day}s?\b", question, re.I)), None)
-    session_filter = "FN" if re.search(r"\b(FN|forenoon|morning)\b", question, re.I) else "AN" if re.search(r"\b(AN|afternoon)\b", question, re.I) else None
-    strict_session = bool(re.search(r"\b(strictly|only|exclusively)\b", question, re.I))
-    is_free_query = bool(re.search(r"\b(free|vacant|available|availability|empty|open|unoccupied|booking|booked|reserve|reserved|extra\s+session)\b", question, re.I))
+    weekday = next((day.title() for day in _DAY_NAMES if re.search(rf"\b{day}s?\b", question, re.IGNORECASE)), None)
+    session_filter = "FN" if re.search(r"\b(FN|forenoon|morning)\b", question, re.IGNORECASE) else "AN" if re.search(r"\b(AN|afternoon)\b", question, re.IGNORECASE) else None
+    strict_session = bool(re.search(r"\b(strictly|only|exclusively)\b", question, re.IGNORECASE))
+    is_free_query = bool(re.search(r"\b(free|vacant|available|availability|empty|open|unoccupied|booking|booked|reserve|reserved|extra\s+session)\b", question, re.IGNORECASE))
 
     if kind == "seating_arrangement":
         return _seating_answer(question, rows, department, query_semester or semester, student_roll_number)
@@ -915,12 +913,12 @@ async def answer_academic_document_query(
 
         if weekday:
             entries = [r for r in entries if r["day"].casefold() == weekday.casefold()]
-        code_match = re.search(r"\b\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?\b", question, re.I)
+        code_match = re.search(r"\b\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?\b", question, re.IGNORECASE)
         if code_match:
             wanted_code = re.sub(r"[^A-Z0-9]", "", code_match.group(0).upper())
             entries = [r for r in entries if wanted_code in re.sub(r"[^A-Z0-9]", "", r["text"].upper())]
         else:
-            stop = {"when", "what", "which", "where", "who", "does", "do", "is", "are", "the", "a", "an", "in", "on", "for", "of", "to", "my", "me", "have", "has", "with", "during", "held", "conducted", "scheduled", "schedule", "timetable", "lab", "laboratory", "it", "itlab", "lab1", "labi", "room", "slot", "slots", "section", "sem", "semester", "year", "btech", "bt", "and", "vs", "all", "week", "weekday", "weekdays", "morning", "afternoon", "day", "free", "vacant", "available", "availability", "occupied", "extra", "session", "sessions", "booked", "book", "test", "any", "there", "between", "after", "before", "computer", "systems", "desktop", "number", "many", "capacity", "academic", "period", "does", "handle", "handles", "teach", "teaches", "faculty", "faculties", "member", "members", "class", "classes", "dr", "mr", "ms", "prof", "col"}
+            stop = {"when", "what", "which", "where", "who", "does", "do", "is", "are", "the", "a", "an", "in", "on", "for", "of", "to", "my", "me", "have", "has", "with", "during", "held", "conducted", "scheduled", "schedule", "timetable", "lab", "laboratory", "it", "itlab", "lab1", "labi", "room", "slot", "slots", "section", "sem", "semester", "year", "btech", "bt", "and", "vs", "all", "week", "weekday", "weekdays", "morning", "afternoon", "day", "free", "vacant", "available", "availability", "occupied", "extra", "session", "sessions", "booked", "book", "test", "any", "there", "between", "after", "before", "computer", "systems", "desktop", "number", "many", "capacity", "academic", "period", "handle", "handles", "teach", "teaches", "faculty", "faculties", "member", "members", "class", "classes", "dr", "mr", "ms", "prof", "col"}
             tokens = [t for t in re.findall(r"[a-z0-9]+", q) if len(t) > 1 and t not in stop] if not is_free_query else []
             # Remove slot/day/date fragments; these are applied as structured filters.
             tokens = [t for t in tokens if not t.isdigit() and t not in {d.casefold() for d in _DAY_NAMES}]
@@ -940,23 +938,23 @@ async def answer_academic_document_query(
                 else:
                     entries = []
 
-        requested_sections = re.findall(r"\b(?:section|sec\.?|class)\s*[-:]?\s*([A-H])\b", question, re.I)
-        if len(set(letter.upper() for letter in requested_sections)) == 1:
+        requested_sections = re.findall(r"\b(?:section|sec\.?|class)\s*[-:]?\s*([A-H])\b", question, re.IGNORECASE)
+        if len({letter.upper() for letter in requested_sections}) == 1:
             letter = requested_sections[0].upper()
             section_patterns = (
                 rf"\b{letter}\s+section\b", rf"\bsection\s*[-:]?\s*{letter}\b",
                 rf"\b(?:sem|semester|yr|year|eee|elc|cce|das)\s*[-:]?\s*{letter}\b",
                 rf"\b{letter}\s*\(\s*\d+\s*\)",
             )
-            entries = [r for r in entries if any(re.search(pattern, r["text"], re.I) for pattern in section_patterns)]
+            entries = [r for r in entries if any(re.search(pattern, r["text"], re.IGNORECASE) for pattern in section_patterns)]
 
         slot_set: set[int] = set()
-        for match in re.finditer(r"\bslots?\s*(\d{1,2})(?:\s*(?:-|–|to)\s*(\d{1,2}))?", question, re.I):
+        for match in re.finditer(r"\bslots?\s*(\d{1,2})(?:\s*(?:-|–|to)\s*(\d{1,2}))?", question, re.IGNORECASE):
             start_slot = int(match.group(1))
             end_slot = int(match.group(2) or start_slot)
             if 1 <= start_slot <= 12 and 1 <= end_slot <= 12:
                 slot_set.update(range(min(start_slot, end_slot), max(start_slot, end_slot) + 1))
-        time_points = re.findall(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", question, re.I)
+        time_points = re.findall(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", question, re.IGNORECASE)
         if not slot_set and len(time_points) >= 2 and re.search(r"\b(between|from)\b", q):
             def _minutes(point: tuple[str, str, str]) -> int:
                 hour, minute, meridiem = int(point[0]), int(point[1] or 0), point[2].lower()
@@ -1049,7 +1047,7 @@ async def answer_academic_document_query(
                 "markdown_answer": f"The indexed {department} Semester {semester} document is {available}; it does not contain a matching {expected} schedule.",
             }
         rows = [row for row in rows if row["document_id"] in matching_docs]
-    gap_question = bool(re.search(r"\b(gap|days between|preparation days)\b", question, re.I))
+    gap_question = bool(re.search(r"\b(gap|days between|preparation days)\b", question, re.IGNORECASE))
     if gap_question and len(target_dates) >= 2:
         start_date, end_date = min(target_dates), max(target_dates)
         gap_days = max(0, (end_date - start_date).days - 1)
@@ -1064,12 +1062,12 @@ async def answer_academic_document_query(
             "records": [],
         }
     if gap_question:
-        between = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:\?|$)", question, re.I)
+        between = re.search(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?:\?|$)", question, re.IGNORECASE)
         if between:
             mentions = [re.sub(r"\([^)]*\)", " ", part).strip(" .,?!") for part in between.groups()]
             course_dates: list[date] = []
             course_rows: list[dict[str, Any]] = []
-            all_codes = re.findall(r"\b\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?\b", question, re.I)
+            all_codes = re.findall(r"\b\d{2}[A-Z]{3,4}\d{3,4}[A-Z]?\b", question, re.IGNORECASE)
             for mention_index, mention in enumerate(mentions):
                 mentioned_code = all_codes[mention_index] if len(all_codes) >= 2 else _course_code(mention)
                 found = next((
@@ -1176,7 +1174,7 @@ async def answer_academic_document_query(
             if not filtered_text:
                 continue
             course_text = filtered_text.split(" — ", 1)[-1].strip()
-            is_lab_exam_label = bool(re.search(r"\blab exam\b", question, re.I) and course_text.strip().casefold() == "lab")
+            is_lab_exam_label = bool(re.search(r"\blab exam\b", question, re.IGNORECASE) and course_text.strip().casefold() == "lab")
             if not _COURSE_CODE_RE.search(course_text) and not is_lab_exam_label and not (course_terms and _matches_course(row, question, code)):
                 continue
             effective_date = row.get("effective_date")
@@ -1201,7 +1199,7 @@ async def answer_academic_document_query(
     for row in deduped:
         row["text"] = " / ".join(row.pop("courses"))
     title = "Exam timetable results"
-    if re.search(r"\b(exam window|start and end|start to finish|concludes?)\b", question, re.I) and deduped:
+    if re.search(r"\b(exam window|start and end|start to finish|concludes?)\b", question, re.IGNORECASE) and deduped:
         schedule_dates = sorted({date.fromisoformat(item["date"]) for item in deduped if item.get("date") != "Date not extracted"})
         if schedule_dates:
             title = f"Examination window: {schedule_dates[0]:%B %-d}–{schedule_dates[-1]:%B %-d, %Y}"
@@ -1227,7 +1225,7 @@ async def answer_academic_document_query(
         for row in deduped[:60]
     ]
     answer = f"### {title}\n\n| Date | Session | Department | Scheduled courses | Source |\n|---|---|---|---|---|\n" + "\n".join(table_lines)
-    if re.search(r"\blab\s+exam\b", question, re.I) and deduped:
+    if re.search(r"\blab\s+exam\b", question, re.IGNORECASE) and deduped:
         lab_departments = ", ".join(dict.fromkeys(row["department"] for row in deduped))
         answer = (
             f"A lab examination entry is listed for **{lab_departments}** on the requested date. "

@@ -1,7 +1,8 @@
-"""backend/core/guardrails.py — Tier-0 Security, Prompt Injection Sanitizer & Academic Guardrails.
+"""backend/core/query_safety_filter.py — Student query safety filter and prompt injection sanitizer.
 
-Executes in < 1ms to reject adversarial prompts, jailbreaks, and out-of-scope non-academic queries
-before consuming any GPU or database resources. Also sanitizes untrusted PDF text chunks.
+Runs fast deterministic checks (< 1ms) to filter out prompt injection attempts,
+SQL commands, and non-academic queries before database or model execution.
+Also strips prompt-delimiter tokens from extracted PDF document chunks.
 """
 
 import re

@@ -7,7 +7,8 @@ Reconstructs:
 4. Cross-page Course & Elective Directories (Theory, PE IV/V/VI, Free Electives, CIR, Lab)
 """
 import re
-from typing import Dict, List, Any, Optional
+from typing import Any
+
 import pdfplumber
 
 SLOT_TIMINGS = {
@@ -49,7 +50,7 @@ COL_TO_SLOT = {
 }
 
 
-def parse_timetable_pdf(pdf_path: str) -> Dict[str, Any]:
+def parse_timetable_pdf(pdf_path: str) -> dict[str, Any]:
     """
     Parses a 3-page timetable PDF into metadata, sessions, and course directories.
     """
@@ -62,8 +63,8 @@ def parse_timetable_pdf(pdf_path: str) -> Dict[str, Any]:
         "academic_year": "2026-2027",
         "class_advisors": "Dr. R. Karthi, Ms. Krishna Priya G",
     }
-    sessions: List[Dict[str, Any]] = []
-    directory_courses: List[Dict[str, Any]] = []
+    sessions: list[dict[str, Any]] = []
+    directory_courses: list[dict[str, Any]] = []
 
     with pdfplumber.open(pdf_path) as pdf:
         # 1. Parse Page 1 (Header + Weekly Grid + Initial Directory)
@@ -74,7 +75,7 @@ def parse_timetable_pdf(pdf_path: str) -> Dict[str, Any]:
             advisor_cell = next((c for c in header_cells if "class advisor" in c.lower()), "")
             mail_cell = next((c for c in header_cells if "mail id" in c.lower()), "")
             names = [x.strip() for x in re.sub(r"(?i)class advisors?\s*:", "", advisor_cell).splitlines() if x.strip()]
-            emails = re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", mail_cell, re.I)
+            emails = re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", mail_cell, re.IGNORECASE)
             if names and len(names) == len(emails):
                 metadata["class_advisors"] = "; ".join(f"{name} ({email})" for name, email in zip(names, emails))
         if tables1:
@@ -163,7 +164,7 @@ def parse_timetable_pdf(pdf_path: str) -> Dict[str, Any]:
 
                     # Capture source cell details without assuming a fixed room list.
                     lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
-                    venue = next((line for line in lines if re.search(r"\b(?:[A-F]\d{3}|Prajna|Seminar|Respective Cabin)\b", line, re.I)), None)
+                    venue = next((line for line in lines if re.search(r"\b(?:[A-F]\d{3}|Prajna|Seminar|Respective Cabin)\b", line, re.IGNORECASE)), None)
                     faculty_lines = [line for line in lines if re.search(r"\b(?:Dr|Ms|Mr|Mrs)\.\s*", line)]
                     faculty = ", ".join(faculty_lines) if faculty_lines else None
 
@@ -259,7 +260,7 @@ def parse_timetable_pdf(pdf_path: str) -> Dict[str, Any]:
                             venue = (row[raw_index + 4] or "").strip()
                             fac = ", ".join(value for value in (fac, lab_header_faculty, assisting) if value)
 
-                    if re.search(r"\bproject\b", name, re.I) and re.search(r"\bslot\b", fac, re.I):
+                    if re.search(r"\bproject\b", name, re.IGNORECASE) and re.search(r"\bslot\b", fac, re.IGNORECASE):
                         venue, fac, current_bucket = fac, "", "Project"
 
                     directory_courses.append({

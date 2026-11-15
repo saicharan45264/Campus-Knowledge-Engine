@@ -22,7 +22,6 @@ from backend.services.embedding_service import (
 from backend.services.topic_mapper import (
     _expand_topic_acronyms,
     fetch_course_topics,
-    resolve_course_and_topics,
     semantic_map_questions_to_topics,
 )
 
@@ -766,7 +765,7 @@ def fetch_all_problems_by_topic(
         elif tok in circuit_synonyms:
             token_groups.append(circuit_synonyms[tok])
         else:
-            token_groups.append(list(set([stem, tok])))
+            token_groups.append(list({stem, tok}))
 
     c_filter = course_code.upper().strip() if course_code else None
 

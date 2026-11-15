@@ -3,19 +3,19 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.academic_tool_calling import fallback_academic_tool, seating_query_intent
 from backend.services import academic_document_qa_service as qa
 from backend.services.academic_document_qa_service import (
     _filter_course_segments,
+    _is_seating_question,
     _query_dates,
     _requested_departments,
     _requested_semester,
-    answer_academic_document_query,
-    _is_seating_question,
     _roll_from_question,
     _seating_answer,
     _seating_entries,
+    answer_academic_document_query,
 )
-from backend.academic_tool_calling import fallback_academic_tool, seating_query_intent
 
 
 class _Result:

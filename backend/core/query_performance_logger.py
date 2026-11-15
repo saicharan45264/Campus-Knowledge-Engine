@@ -1,8 +1,8 @@
-"""backend/core/telemetry.py — Production Observability, Latency Profiling & Token Telemetry.
+"""backend/core/query_performance_logger.py — Query latency tracker and database audit logger.
 
-Tracks stage-by-stage timings:
-  t_total = t_router + t_retrieval + t_llm_ttft + t_llm_generation
-Asynchronously commits query audit logs to PostgreSQL query_logs table without blocking event loops.
+Tracks stage-wise timings for every student query:
+  total_time = router_time + retrieval_time + first_token_time + answer_generation_time
+Asynchronously commits query audit logs to the PostgreSQL query_logs table without blocking chat streaming.
 """
 
 import asyncio
@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 from backend.database import AsyncSessionLocal, QueryLog
 
-logger = logging.getLogger("mach_ai.telemetry")
+logger = logging.getLogger("mach_ai.performance_logger")
 
 
 class QueryLatencyTracker:

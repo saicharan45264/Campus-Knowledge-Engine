@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import pytest
 
-from backend.services.embedding_service import cosine_similarity, embed_text
+from backend.core import http_client
+from backend.services.embedding_service import cosine_similarity, embed_text, embedding_cache
 
 
 @pytest.mark.asyncio
-async def test_embedder_cache():
+async def test_embedder_cache(monkeypatch):
+    async def mock_post(url, json=None, timeout=None):
+        class MockResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if "/api/embed" in str(url):
+                    texts = (json or {}).get("input", [])
+                    return {"embeddings": [[0.1] * 768 for _ in texts]}
+                return {"embedding": [0.1] * 768}
+
+        return MockResp()
+
+    shared = http_client.get_shared_http_client()
+    monkeypatch.setattr(shared, "post", mock_post)
+
+    embedding_cache.cache.clear()
+
     # Cache miss
     emb1 = await embed_text("Hello World")
     assert isinstance(emb1, list)

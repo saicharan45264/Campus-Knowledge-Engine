@@ -12,6 +12,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+tests/cache/
 backend/cache/
 
 # ── Version Control & Tooling ──
@@ -29,14 +30,13 @@ backend/cache/
 # ── Uploads, PDFs & Test Documents ──
 uploads/
 backend/uploads/
-docs/model input docs/
-docs/test_docs/
+tests/test_data/*.pdf
 *.pdf
 *.pptx
 *.dump
 
-# ── Benchmark Run Data ──
-scripts/benchmark_results.json
+# ── Runtime Logs & Benchmark Output ──
+backend/scripts/benchmark_results.json
 *.log
 
 # ── Docker Configuration Files ──

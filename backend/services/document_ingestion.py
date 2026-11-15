@@ -1,45 +1,50 @@
-"""
-document_ingestion.py — Unified ingestion coordinator for all 5 document types:
-- syllabus
-- pyq
-- academic_calendar
-- timetable
-- regulations
+"""backend/services/document_ingestion.py — Unified ingestion coordinator.
+
+Coordinates parsing, relational mapping, vector embedding, and graph storage
+across all 8 supported institutional document types:
+- syllabus: Curriculum structure, course outcomes, topics, and prerequisite DAG
+- pyq: Past exam question papers with diagram cropping and BTL mapping
+- academic_calendar: Semester dates, working Saturdays, holidays, and milestones
+- timetable: Class weekly schedule, slot mappings, and faculty venues
+- regulations: B.Tech academic ordinances, attendance rules, and degree criteria
+- exam_schedule: Mid-term and end-semester examination time tables
+- seating_arrangement: Hall allocations indexed by student register number ranges
+- lab_timetable: Lab batch schedules, vacant slots, and lab faculty allocations
 """
 import asyncio
 import json
 import uuid
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Any
 
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 
 from backend.database import (
-    Document,
-    DocumentChunk,
+    AcademicDocumentRecord,
+    AcademicEvent,
     CalendarDay,
     CalendarDayCohort,
-    AcademicEvent,
-    TimetableVersion,
-    WeeklySession,
+    ClauseReference,
+    Document,
+    DocumentChunk,
     ElectiveOption,
     RegulationClause,
-    ClauseReference,
-    AcademicDocumentRecord,
+    TimetableVersion,
+    WeeklySession,
 )
-from backend.services.embedding_service import embed_texts, format_doc_embedding_text
-from backend.parsers.regulations_parser import parse_regulations_pdf
-from backend.parsers.calendar_parser import parse_academic_calendar_pdf
-from backend.parsers.timetable_parser import parse_timetable_pdf
 from backend.parsers.academic_documents_parser import parse_academic_document
+from backend.parsers.calendar_parser import parse_academic_calendar_pdf
+from backend.parsers.regulations_parser import parse_regulations_pdf
+from backend.parsers.timetable_parser import parse_timetable_pdf
+from backend.services.embedding_service import embed_texts, format_doc_embedding_text
 
 
 async def ingest_regulations_document(
     doc_id: uuid.UUID,
     file_path: str,
     db: AsyncSession,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingests an academic regulations PDF:
     - Extracts 90+ clauses with parent hierarchy
@@ -121,7 +126,7 @@ async def ingest_calendar_document(
     doc_id: uuid.UUID,
     file_path: str,
     db: AsyncSession,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingests an academic calendar PDF:
     - Extracts 395 days and 22 timetable overrides
@@ -235,7 +240,7 @@ async def ingest_academic_document(
     file_path: str,
     doc_type: str,
     db: AsyncSession,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Parse and index a scoped lab, seating, or exam schedule PDF."""
     source_result = await db.execute(select(Document).where(Document.id == doc_id))
     source_doc = source_result.scalar_one_or_none()
@@ -321,7 +326,7 @@ async def ingest_timetable_document(
     doc_id: uuid.UUID,
     file_path: str,
     db: AsyncSession,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingests a class timetable PDF:
     - Extracts weekly sessions across Monday-Friday

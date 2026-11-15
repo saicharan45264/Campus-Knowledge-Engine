@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+
 from sqlalchemy import select
-from backend.database import TimetableVersion, ElectiveOption
+
+from backend.database import ElectiveOption, TimetableVersion
 
 
 def is_timetable_directory_query(question: str) -> bool:
@@ -45,7 +47,7 @@ async def answer_directory(question: str, db, version: TimetableVersion, session
         venues = list(dict.fromkeys(str(s['venue']).strip() for s in sessions if 'mentoring' in (s.get('activity') or '').casefold() and s.get('venue')))
         return {'markdown_answer': '**Mentoring location:** ' + ', '.join(venues) if venues else 'The mentoring location was not extracted from the timetable.'}
     opts = (await db.execute(select(ElectiveOption).where(ElectiveOption.timetable_id == version.id))).scalars().all()
-    codes = {m.upper() for m in re.findall(r'\b\d{2}[a-z]{3}\d{3,4}\b', question, re.I)}
+    codes = {m.upper() for m in re.findall(r'\b\d{2}[a-z]{3}\d{3,4}\b', question, re.IGNORECASE)}
     is_lab = bool(re.search(r'\b(lab|laboratory|practical)\b', q))
     mentioned = [o for o in opts if (o.course_code or '').upper() in codes]
     if not mentioned:
@@ -77,7 +79,7 @@ async def answer_directory(question: str, db, version: TimetableVersion, session
             category = o.elective_bucket if o.elective_bucket and o.elective_bucket.casefold() != 'general' else 'Not classified in the index; check the source PDF'
             parts=[f"**{o.course_code} — {o.course_name}**",f"Category: {category}"]
             if o.faculty: parts.append(f"Faculty: {o.faculty}")
-            if o.venue and not (is_lab and re.search(r"\b(dr|ms|mr|mrs)\.?\s", o.venue, re.I)): parts.append(f"Venue details: {o.venue}")
+            if o.venue and not (is_lab and re.search(r"\b(dr|ms|mr|mrs)\.?\s", o.venue, re.IGNORECASE)): parts.append(f"Venue details: {o.venue}")
             elif is_lab and o.venue: parts.append("Lab venue and assisting faculty need verification against the source PDF")
             rows.append('- ' + ' · '.join(parts))
         return {'timetable_mode':'directory','markdown_answer':'### Timetable course directory\n\n'+'\n'.join(rows)}
@@ -88,7 +90,7 @@ async def answer_directory(question: str, db, version: TimetableVersion, session
         options=[o for o in opts if re.sub(r'\s+','',(o.elective_bucket or '').upper()) == re.sub(r'\s+','',bucket)]
         if re.search(r"\b(inter[- ]department(?:al)?|other departments?)\b", q):
             dept = (version.department or "").upper()
-            options = [o for o in options if re.match(r"^\d{2}([A-Z]{3})", o.course_code or "", re.I) and re.match(r"^\d{2}([A-Z]{3})", o.course_code, re.I).group(1).upper() != dept]
+            options = [o for o in options if re.match(r"^\d{2}([A-Z]{3})", o.course_code or "", re.IGNORECASE) and re.match(r"^\d{2}([A-Z]{3})", o.course_code, re.IGNORECASE).group(1).upper() != dept]
         if options:
             return {'timetable_mode':'directory','markdown_answer':f'### {bucket} options\n\n'+'\n'.join(f'- **{o.course_code}** — {o.course_name}' for o in options)+'\n\nOnly courses assigned to this bucket in the indexed timetable are shown.'}
         return {'markdown_answer':f'No courses were indexed for {bucket} in this timetable.'}

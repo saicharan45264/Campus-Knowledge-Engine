@@ -1,0 +1,99 @@
+name: M.A.C.H. AI CI
+
+on:
+  push:
+    branches: [main, Vamsi]
+  pull_request:
+    branches: [main, Vamsi]
+
+jobs:
+  lint-and-test:
+    name: Code Quality & Test Suite
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: mach_ai
+          POSTGRES_USER: mach
+          POSTGRES_PASSWORD: ai
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U mach -d mach_ai"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      neo4j:
+        image: neo4j:5.24-community
+        env:
+          NEO4J_AUTH: neo4j/mach_ai_cke
+          NEO4J_PLUGINS: '["apoc"]'
+        ports:
+          - 7474:7474
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Ruff Linter
+        run: |
+          ruff check .
+
+      - name: Run Automated Test Suite
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5434
+          POSTGRES_DB: mach_ai
+          POSTGRES_USER: mach
+          POSTGRES_PASSWORD: ai
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: mach_ai_cke
+          JWT_SECRET: ci-testing-jwt-secret-key-32chars-min
+          APP_ENV: testing
+          PYTHONPYCACHEPREFIX: tests/cache/pycache
+        run: |
+          pytest tests/ -v
+
+  docker-build:
+    name: Docker Image Build Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Build Application Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: mach-ai:latest

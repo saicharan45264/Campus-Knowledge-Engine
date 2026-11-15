@@ -1,11 +1,14 @@
 """Calendar question answering restored from asofNov13."""
 import re
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, List, Optional
+
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
-from backend.database import CalendarDay, CalendarDayCohort, AcademicEvent
+
+from backend.database import AcademicEvent, CalendarDay, CalendarDayCohort
+
 
 def _festival_topic_tokens(query: str) -> list[str]:
     q = re.sub(r"[^a-z0-9]+", " ", query.lower())
@@ -176,7 +179,7 @@ def _named_holidays(
                 add(d.calendar_date.date().isoformat(), d.day_of_week, _get_holiday_name(d))
         else:
             status, particulars = (d.status or "").strip(), (d.particulars or "").strip()
-            if re.search(r"\bholiday\b", status + " " + particulars, re.I):
+            if re.search(r"\bholiday\b", status + " " + particulars, re.IGNORECASE):
                 add(d.calendar_date.date().isoformat(), d.day_of_week, particulars or status)
 
     for e in academic_events or []:
@@ -192,13 +195,9 @@ def _is_day_a_holiday(d: CalendarDay) -> bool:
     particulars = (d.particulars or "").strip()
     if status == "W" or d.timetable_override:
         return False
-    if re.search(r"\bholiday\b", status + " " + particulars, re.I):
+    if re.search(r"\bholiday\b", status + " " + particulars, re.IGNORECASE):
         return True
-    if d.day_of_week == "Sun" and status != "W":
-        return True
-    if d.day_of_week == "Sat" and status != "W":
-        return True
-    return False
+    return bool(d.day_of_week in ("Sun", "Sat") and status != "W")
 
 
 def _get_holiday_name(d: CalendarDay) -> str:
@@ -310,7 +309,7 @@ async def answer_calendar_query(
     question: str,
     db: AsyncSession,
     semester: str | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Answers academic calendar, holiday, milestone, and exam date queries.
     """
@@ -536,7 +535,7 @@ async def answer_calendar_query(
         if not re.search(r"\b20\d{2}\b", question):
             all_days = (await db.execute(select(CalendarDay))).scalars().all()
             candidates = [d for d in all_days if d.calendar_date.month == d_obj.month and d.calendar_date.day == d_obj.day]
-            weekday = re.search(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", question, re.I)
+            weekday = re.search(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", question, re.IGNORECASE)
             if weekday:
                 candidates = [d for d in candidates if d.calendar_date.strftime("%A").lower() == weekday.group(1).lower()]
             if len(candidates) == 1:

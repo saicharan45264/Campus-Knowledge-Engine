@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-scripts/reembed_chunks.py — Re-embed all document chunks in PostgreSQL with embeddinggemma-2:latest.
+"""backend/scripts/reembed_chunks.py — Re-embed all document chunks in PostgreSQL with embeddinggemma-2:latest.
 Flushes the semantic cache to eliminate stale cross-model embeddings.
 """
 

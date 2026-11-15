@@ -8,9 +8,9 @@ Extracts:
 """
 import re
 from datetime import date
-from typing import Dict, List, Any, Optional
-import pdfplumber
+from typing import Any
 
+import pdfplumber
 
 MONTH_MAP = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
@@ -22,7 +22,7 @@ COHORT_HEADERS = [
 ]
 
 
-def _parse_month_header(text: str) -> tuple[Optional[int], Optional[int], Optional[str]]:
+def _parse_month_header(text: str) -> tuple[int | None, int | None, str | None]:
     m = re.search(r"([A-Za-z]{3})-(\d{2})", text or "")
     if m:
         mon_str = m.group(1).upper()
@@ -31,16 +31,16 @@ def _parse_month_header(text: str) -> tuple[Optional[int], Optional[int], Option
     return None, None, None
 
 
-def _detect_timetable_override(text: str) -> Optional[str]:
+def _detect_timetable_override(text: str) -> str | None:
     if not text:
         return None
     for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]:
-        if re.search(rf"{day}'s\b", text, re.I):
+        if re.search(rf"{day}'s\b", text, re.IGNORECASE):
             return day
     return None
 
 
-def parse_academic_calendar_pdf(pdf_path: str) -> Dict[str, Any]:
+def parse_academic_calendar_pdf(pdf_path: str) -> dict[str, Any]:
     """
     Parses the 13-page academic calendar PDF.
     Returns:
@@ -48,8 +48,8 @@ def parse_academic_calendar_pdf(pdf_path: str) -> Dict[str, Any]:
     - 'events': List of extracted academic milestones and holidays
     - 'academic_year': Extracted academic year (e.g. '2026-2027')
     """
-    days: List[Dict[str, Any]] = []
-    events: List[Dict[str, Any]] = []
+    days: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     academic_year = "2026-2027"
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -95,7 +95,7 @@ def parse_academic_calendar_pdf(pdf_path: str) -> Dict[str, Any]:
 
                 override = _detect_timetable_override(particulars)
 
-                cohort_cds: Dict[str, int] = {}
+                cohort_cds: dict[str, int] = {}
                 for c_idx, c_name in enumerate(COHORT_HEADERS, start=3):
                     if c_idx < len(row) and row[c_idx] and "CD" in row[c_idx]:
                         cd_m = re.search(r"CD\s*(\d+)", row[c_idx])

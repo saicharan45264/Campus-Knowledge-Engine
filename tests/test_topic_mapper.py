@@ -13,10 +13,10 @@ async def test_mapper_returns_confirmed_suggestion_and_unmapped_without_llm(monk
         return vectors
 
     monkeypatch.setattr(topic_mapper, "embed_texts", fake_embed_texts)
-    syllabus = "\n".join([
-        "[T1] Unit: Unit 1 | Topic: Relational Algebra",
-        "[T2] Unit: Unit 2 | Topic: Normalization",
-    ])
+    syllabus = (
+        "[T1] Unit: Unit 1 | Topic: Relational Algebra\n"
+        "[T2] Unit: Unit 2 | Topic: Normalization"
+    )
     questions = [
         {"question_text": "Explain relational algebra."},
         {"question_text": "What is the concept?"},

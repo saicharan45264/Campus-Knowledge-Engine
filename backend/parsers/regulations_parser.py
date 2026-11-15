@@ -4,7 +4,8 @@ Extracts Ordinances (O.1..O.5) and Regulations (R.1..R.31), preserving hierarchy
 cross-page clause continuations, subclauses, conditions, and clause cross-references.
 """
 import re
-from typing import Dict, List, Any, Optional
+from typing import Any
+
 try:
     import pymupdf as fitz
 except ImportError:  # PyMuPDF releases before the ``pymupdf`` import alias.
@@ -13,21 +14,21 @@ except ImportError:  # PyMuPDF releases before the ``pymupdf`` import alias.
 
 HEADER_PATTERN = re.compile(
     r"Amrita Vishwa Vidyapeetham\s+B\.Tech\.\s+Regulations\s+2023\s+Page\s+\d+\s+of\s+\d+",
-    re.I,
+    re.IGNORECASE,
 )
-PAGE_FOOTER_PATTERN = re.compile(r"^Page \d+ of \d+$", re.I)
+PAGE_FOOTER_PATTERN = re.compile(r"^Page \d+ of \d+$", re.IGNORECASE)
 CLAUSE_START_PATTERN = re.compile(r"^(O\.\d+|R\.\d+(?:\.\d+)*)\.?\s*(.*)$")
 CROSS_REF_PATTERN = re.compile(r"\b(R\.\d+(?:\.\d+)*|O\.\d+)\b")
 
 
-def parse_regulations_pdf(pdf_path: str) -> Dict[str, Any]:
+def parse_regulations_pdf(pdf_path: str) -> dict[str, Any]:
     """
     Parses an academic regulations PDF into structured clauses and references.
     Skips the Page 1 Contents page.
     """
     doc = fitz.open(pdf_path)
-    clauses: List[Dict[str, Any]] = []
-    current_clause: Optional[Dict[str, Any]] = None
+    clauses: list[dict[str, Any]] = []
+    current_clause: dict[str, Any] | None = None
 
     # Skip page 0 (Contents page)
     for page_idx in range(1, len(doc)):
@@ -35,7 +36,7 @@ def parse_regulations_pdf(pdf_path: str) -> Dict[str, Any]:
         text = page.get_text()
         raw_lines = text.split("\n")
 
-        clean_lines: List[str] = []
+        clean_lines: list[str] = []
         for line in raw_lines:
             s = line.strip()
             if not s or HEADER_PATTERN.search(s) or PAGE_FOOTER_PATTERN.match(s):
@@ -108,7 +109,7 @@ def parse_regulations_pdf(pdf_path: str) -> Dict[str, Any]:
 
     # Extract cross-references between clauses
     all_clause_ids = {c["clause_id"] for c in clauses}
-    references: List[Dict[str, str]] = []
+    references: list[dict[str, str]] = []
     seen_refs = set()
 
     for c in clauses:

@@ -51,8 +51,8 @@ The platform pairs a **Neo4j Property Graph** for exact curriculum and topic tra
 |                                       v                                                            |
 |                    +------------------------------------+                                          |
 |                    |  Tiered Query & Retrieval Engine   |                                          |
-|                    |  - Tier-0 Guardrails               |                                          |
-|                    |  - Tier-0.5 Semantic Cache         |                                          |
+|                    |  - Query Safety Filter             |                                          |
+|                    |  - Semantic Similarity Cache        |                                          |
 |                    |  - Zero-LLM Graph Fast-Path        |                                          |
 |                    |  - Hybrid RRF + Topic Graph + VLM  |                                          |
 |                    +------------------+-----------------+                                          |
@@ -73,7 +73,7 @@ The platform pairs a **Neo4j Property Graph** for exact curriculum and topic tra
 - **Strict Hierarchical Academic Graph:** Models `Program -> SyllabusVersion -> Semester / ElectiveBasket / CurriculumRule -> Course -> Unit -> Topic`, shared `EvaluationPattern -> AssessmentComponent`, and `Question -> Topic / Course / ExamPaper` relationships.
 - **VLIL Multimodal Diagram Pipeline:** Selectively crops PYQ pages containing circuits or figures at high resolution (1024px) using PyMuPDF, analyzes diagrams with `gemma4:12b-it-qat`, and computes joint text + diagram embeddings with `embeddinggemma-2:latest`.
 - **Course-Code Alias & Topic Mapping:** Automatically resolves cross-listed codes (e.g., `23CSE104` to `23EEE104` via normalized course title) and maps PYQs accurately to specific topics using batched embeddings plus a selective Gemma 4 tie-breaker.
-- **Tier-0 Guardrails & Tier-0.5 Semantic Cache:** Rejects prompt injections and off-topic queries upfront, and serves semantically similar repeated queries directly from `semantic_cache` (`halfvec(768)` HNSW).
+- **Query Safety Filter & Semantic Cache:** Rejects prompt injections and off-topic queries upfront, and serves semantically similar repeated queries directly from `semantic_cache` (`halfvec(768)` HNSW).
 - **Student & Admin Web Portals:** Student portal supports real-time SSE streaming with collapsible `<think>` reasoning, zoomable PYQ cards, mark/topic filtering, image paste/upload/drop queries, and feedback; Admin portal supports bulk PDF upload, background ingestion polling, evaluation radar charts, and system reset.
 
 ---
@@ -83,28 +83,28 @@ The platform pairs a **Neo4j Property Graph** for exact curriculum and topic tra
 ```
 MACH_AI/
 ├── README.md                      # Project documentation and setup guide
-├── ImplementationPlan.md          # Current & upcoming deployment roadmap
-├── Dockerfile                     # Production container image for FastAPI server
 ├── docker-compose.yml             # Full-stack Docker setup (PostgreSQL 16 + Neo4j 5.24 + FastAPI)
 ├── requirements.txt               # Python package dependencies
-├── pytest.ini                     # Pytest runner configuration
 ├── ruff.toml                      # Ruff linter rules
-├── .env.example                   # Environment template (copy to .env before running)
+├── .gitignore                     # Git exclusion rules
+├── .env                           # Local environment configuration
 │
 ├── backend/                       # FastAPI application package
 │   ├── main.py                    # ASGI entrypoint (CORS, GZip, security headers, static mounts)
 │   ├── config.py                  # Pydantic BaseSettings & environment config
 │   ├── database.py                # SQLAlchemy ORM models, halfvec HNSW + GIN indexes, Neo4j schema
+│   ├── ImplementationPlan.md      # Backend implementation checklist and roadmap
+│   ├── scripts/                   # Backend maintenance utilities (backup_databases.sh, reembed_chunks.py)
 │   ├── api/
 │   │   ├── auth.py                # JWT auth, Bcrypt hashing, RBAC guards (/login)
 │   │   ├── chat.py                # /chat (SSE streaming & fast-path), /feedback, /image-query
 │   │   ├── ingestion.py           # /upload, /documents, /processing-status, DELETE, /reset
 │   │   └── evaluation.py          # /health, /eval/run, /eval/metrics
 │   ├── core/
-│   │   ├── guardrails.py          # Input sanitizer & retrieved chunk delimiter sanitizer
+│   │   ├── query_safety_filter.py # Input safety filter & prompt injection sanitizer
 │   │   ├── intent_router.py       # Regex + embedding cosine intent classifier
 │   │   ├── semantic_cache.py      # PostgreSQL halfvec(768) cache + in-memory cache
-│   │   ├── telemetry.py           # Query latency tracking and query_logs aggregation
+│   │   ├── query_performance_logger.py # Query latency tracking and query_logs database logger
 │   │   └── http_client.py         # Shared httpx client & GPU concurrency semaphore
 │   ├── services/
 │   │   ├── rag_orchestrator.py    # Multi-turn history, hybrid RRF retrieval, Gemma 4 streaming
@@ -115,6 +115,7 @@ MACH_AI/
 │   │   ├── timetable_directory.py # Course faculty and venue directory from class timetables
 │   │   ├── embedding_service.py   # Batched text & multimodal embeddinggemma-2 caller + LRU cache
 │   │   ├── topic_mapper.py        # Title-alias resolution, calibrated question-topic mapper
+│   │   ├── evaluation_benchmark.py # 20-sample ground-truth benchmark suite
 │   │   └── storage_service.py     # Cloudinary upload with local /static/images fallback
 │   └── parsers/
 │       ├── pdf_classifier.py      # Auto-detects Syllabus, PYQ, Calendar, Regulations, Schedules
@@ -134,36 +135,29 @@ MACH_AI/
 │   ├── css/                       # Modular CSS stylesheets
 │   └── js/                        # ES module UI controllers (api, auth, utils, login, student, admin)
 │
-├── scripts/                       # Evaluation & DevOps utilities
-│   ├── eval_benchmark.py          # 20-query ground-truth retrieval benchmark
-│   ├── sync_paper_metrics.py      # Exports benchmark & telemetry metrics to docs/generated_tables.tex
-│   ├── reembed_chunks.py          # Batch migration script to re-embed chunks with embeddinggemma-2
-│   └── backup_databases.sh        # Automated PostgreSQL & Neo4j backup script (14-day retention)
-│
-├── deploy/                        # Campus server deployment configs
+├── deploy/                        # Production server deployment & container configs
+│   ├── Dockerfile                 # Production multi-stage container image
+│   ├── .dockerignore              # Docker build exclusions
+│   ├── .env.example               # Reference environment variables template
 │   ├── nginx/nginx.conf           # HTTPS reverse proxy & unbuffered SSE streaming for /chat
 │   └── systemd/ollama.service     # Managed Ollama systemd unit
 │
-├── tests/                         # Automated test suite (110 tests)
-│   ├── test_academic_document_qa.py
-│   ├── test_academic_tool_calling.py
-│   ├── test_calendar_restoration.py
-│   ├── test_embedder.py
-│   ├── test_integration_neo4j.py
-│   ├── test_intent_router.py
-│   ├── test_lab_timetable_queries.py
-│   ├── test_parsers_and_security.py
-│   ├── test_regulation_grounding.py
-│   ├── test_security_auth.py
-│   ├── test_timetable_question_service.py
-│   └── test_topic_mapper.py
-│
-└── docs/                          # Research manuscript, inputs & test PDFs
-    ├── MACH_IEEE_Paper.tex
-    ├── generated_tables.tex
-    ├── ref.bib
-    ├── model input docs/          # Official curriculum & exam paper PDFs
-    └── test_docs/                 # Course-wise sample question papers
+└── tests/                         # Automated test suite (110+ tests)
+    ├── pytest.ini                 # Pytest runner configuration
+    ├── cache/                     # Centralized test and linter caches
+    ├── test_data/                 # Sample evaluation test fixtures
+    ├── test_academic_document_qa.py
+    ├── test_academic_tool_calling.py
+    ├── test_calendar_restoration.py
+    ├── test_embedder.py
+    ├── test_integration_neo4j.py
+    ├── test_intent_router.py
+    ├── test_lab_timetable_queries.py
+    ├── test_parsers_and_security.py
+    ├── test_regulation_grounding.py
+    ├── test_security_auth.py
+    ├── test_timetable_question_service.py
+    └── test_topic_mapper.py
 ```
 
 ---
@@ -186,18 +180,21 @@ MACH_AI/
 
 ---
 
-## Quickstart Setup
+## Quickstart Setup & Execution Runbook
 
 ### Prerequisites
-- Docker Desktop (for `pgvector`, `Neo4j 5.24`, and containerized backend)
-- Python 3.11+ (for local development, scripts, and tests)
-- [Ollama](https://ollama.ai/) running locally on port `11434`
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (PostgreSQL 16 `pgvector`, Neo4j 5.24 Community, FastAPI)
+- Python 3.11+ (for local host execution, scripts, and tests)
+- [Ollama](https://ollama.com/) (running locally on port `11434` or remotely on Google Colab GPU via Ngrok)
+
+---
 
 ### 1. Configure Environment
+Copy the deployment template into your local `.env`:
 ```bash
-cp .env.example .env
+cp deploy/.env.example .env
 ```
-Update `JWT_SECRET` (mandatory in production) and verify Ollama/DB settings in `.env`:
+Key defaults configured in `.env`:
 ```env
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma4:12b-it-qat
@@ -214,67 +211,134 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=mach_ai_cke
 ```
 
-### 2. Pull Required Ollama Models
+---
+
+### 2. LLM Serving Options
+
+#### Option A: Local Ollama Execution
 ```bash
 ollama serve
 ollama pull embeddinggemma-2:latest
 ollama pull gemma4:12b-it-qat
 ```
 
-### 3. Start Stack with Docker Compose
+#### Option B: Free Google Colab GPU Tunnel (via Ngrok)
+Run this block in a free Google Colab GPU Notebook (T4 / A100):
+```python
+# 1. Install Ollama & Dependencies
+!apt-get update -qq && apt-get install -y -qq zstd pciutils > /dev/null 2>&1
+!curl -fsSL https://ollama.com/install.sh | sh > /dev/null 2>&1
+!pip install pyngrok -q > /dev/null 2>&1
+
+import os, threading, time
+from pyngrok import ngrok
+
+# 2. Start Ollama Server in Background
+threading.Thread(target=lambda: os.system("OLLAMA_HOST=0.0.0.0 ollama serve"), daemon=True).start()
+print("Starting Ollama server...")
+time.sleep(3)
+
+# 3. Pull Production Models
+print("\nPulling embeddinggemma-2:latest (768d embeddings)...")
+!ollama pull embeddinggemma-2:latest
+print("\nPulling gemma4:12b-it-qat (Multimodal Vision + Reasoning)...")
+!ollama pull gemma4:12b-it-qat
+
+# 4. Open Ngrok Tunnel (replace with your Ngrok token)
+ngrok.set_auth_token("YOUR_NGROK_AUTH_TOKEN")
+public_url = ngrok.connect(11434).public_url
+print("\n" + "="*60)
+print(f"OLLAMA CLOUD URL: {public_url}")
+print("="*60 + "\n")
+print(f'Set in your local .env: OLLAMA_BASE_URL="{public_url}"')
+```
+
+---
+
+### 3. Docker Orchestration
+
+#### Clean Reset (Rebuild from Scratch)
 ```bash
+docker compose down -v
 docker compose up -d --build
 ```
-- **Web Portal:** [`http://localhost:8000/public/index.html`](http://localhost:8000/public/index.html)
-- **Health Check:** [`http://localhost:8000/health`](http://localhost:8000/health)
-- **Neo4j Browser:** [`http://localhost:7474`](http://localhost:7474)
-- **Demo Accounts:** `student` / `student123` · `admin` / `admin123`
 
-For local host backend execution during development (keeping DBs in Docker):
+#### Normal Start / Stop
 ```bash
+# Start all containers in background
+docker compose up -d
+
+# Stop all containers
+docker compose down
+```
+
+#### Run Backend Locally on Host (Keeping DBs in Docker)
+```bash
+# 1. Start database containers only
 docker compose up -d postgres neo4j
-python3.11 -m venv venv
+docker stop cl-backend 2>/dev/null || true
+
+# 2. Activate virtualenv and run FastAPI backend
 source venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+python backend/main.py
 ```
 
 ---
 
-## REST API Reference
+### 4. Default Access & Credentials
 
-| Method | Endpoint | Description | Access |
-|---|---|---|:---:|
-| `POST` | `/login` | Authenticate credentials and issue JWT bearer token | Public |
-| `POST` | `/chat` | Query endpoint (Fast-Path JSON, cached responses, SSE streaming, image attachments) | Student / Admin |
-| `POST` | `/feedback/{message_id}` | Submit thumbs up/down feedback (`X-Message-ID`) | Student / Admin |
-| `POST` | `/image-query` | Reverse-lookup academic concept from an uploaded image | Student / Admin |
-| `POST` | `/upload` | Bulk PDF upload with auto-classification and background ingestion | Admin |
-| `GET` | `/documents` | List indexed documents and ingestion status | Admin |
-| `GET` | `/processing-status` | Poll background ingestion queue progress | Admin |
-| `DELETE` | `/documents/{doc_id}` | Cascade delete document, chunks, crops, and Neo4j nodes | Admin |
-| `POST` | `/eval/run` | Run and save the 20-query evaluation benchmark | Admin |
-| `GET` | `/eval/metrics` | Fetch runtime telemetry and saved benchmark metrics | Admin |
-| `POST` | `/reset` | Wipe all documents, chunks, images, and Neo4j graph data | Admin |
-| `GET` | `/health` | Check PostgreSQL, Neo4j, and Ollama connectivity | Public |
+| Service | Interface URL | Default Credentials | Purpose |
+|:---|:---|:---|:---|
+| **Student Portal** | [`http://localhost:8000`](http://localhost:8000) | `student` / `student123` | Conversational query interface & PYQ search |
+| **Admin Portal** | [`http://localhost:8000/admin.html`](http://localhost:8000/admin.html) | `admin` / `admin123` | Document ingestion queue & evaluation radar |
+| **PostgreSQL (pgvector)** | `localhost:5434` | `mach` / `ai` (`db: mach_ai`) | Relational documents, 768d vector store & audit logs |
+| **Neo4j Browser** | [`http://localhost:7474`](http://localhost:7474) | `neo4j` / `mach_ai_cke` | Visual Graph Explorer (`bolt://localhost:7687`) |
 
 ---
 
-## Testing, Linting & Evaluation
+### 5. Database Inspection & Verification Queries
 
+Inspect PostgreSQL inside the running container:
 ```bash
-# Linter
+docker exec -it cl-postgres psql -U mach -d mach_ai
+```
+
+Common verification queries:
+```sql
+-- 1. Check indexed documents
+SELECT doc_type, department, filename, created_at FROM documents;
+
+-- 2. Check total indexed vector chunks
+SELECT COUNT(*) AS total_chunks FROM document_chunks;
+
+-- 3. Inspect recent query routing & latency logs
+SELECT intent, execution_latency_ms, timestamp FROM query_logs ORDER BY timestamp DESC LIMIT 10;
+```
+
+---
+
+### 6. Automated Testing & Code Quality
+
+Run tests and linters from the project root:
+```bash
+# Linter check
 ./venv/bin/ruff check .
 
-# Full unit + integration + security test suite (35 tests)
-./venv/bin/pytest -v
+# Run full automated regression test suite (110+ tests across 12 suites)
+./venv/bin/pytest tests/ -v
+```
 
-# Ground-truth evaluation benchmark & LaTeX table export
-./venv/bin/python scripts/eval_benchmark.py
-./venv/bin/python scripts/sync_paper_metrics.py
+---
 
-# Re-embed existing chunks after changing embedding model
-./venv/bin/python scripts/reembed_chunks.py
+### 7. Maintenance & Backups
+
+```bash
+# Run automated database backup snapshot (PostgreSQL dump + Neo4j archive)
+./backend/scripts/backup_databases.sh
+
+# Batch re-embed document chunks into PostgreSQL pgvector
+python backend/scripts/reembed_chunks.py
 ```
 
 ---

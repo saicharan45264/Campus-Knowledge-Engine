@@ -14,7 +14,6 @@ import httpx
 from backend.config import settings
 from backend.core.http_client import get_shared_http_client
 
-
 S = {"type": "string"}
 I = {"type": "integer"}
 B = {"type": "boolean"}
@@ -84,7 +83,7 @@ _ACADEMIC_QUERY = re.compile(
     r"reopen(?:ing)?|commenc(?:e|ement)|resume|resumption|last instruction|"
     r"today|tomorrow|yesterday|next\s+\w+|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
     r"january|february|march|april|may|june|july|august|september|october|november|december)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -107,9 +106,11 @@ def calendar_query_intent(question: str) -> bool:
         return True
     if re.search(r"\b(semester|sem|year|years)\b", q) and re.search(r"\b(start|starts|begin|begins|commence|commencement|reopen|reopening|midterm|mid term|mid sem|end sem|final exams?)\b", q):
         return True
-    if re.search(r"\b(events?|scheduled|happening)\b", q) and re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", q) and not re.search(r"\b(exam|exams|examination)\b", q):
-        return True
-    return False
+    return bool(
+        re.search(r"\b(events?|scheduled|happening)\b", q)
+        and re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", q)
+        and not re.search(r"\b(exam|exams|examination)\b", q)
+    )
 
 
 def exam_schedule_query_intent(question: str) -> bool:
@@ -141,7 +142,7 @@ def seating_query_intent(question: str) -> bool:
     """Route seating-circular facts before generic exam-schedule intent."""
     q = (question or "").casefold()
     return bool(
-        re.search(r"\bCB\s*[.]?\s*EN\s*[.]?\s*U4\s*[A-Z]{3,4}\s*\d{5}\b", question or "", re.I)
+        re.search(r"\bCB\s*[.]?\s*EN\s*[.]?\s*U4\s*[A-Z]{3,4}\s*\d{5}\b", question or "", re.IGNORECASE)
         or re.search(r"\b(seating|seated|sit|sitting|exam\s+halls?|hall allocation|register number|roll number|arrear|re[ -]?regist\w*|auditorium)\b", q)
         or (re.search(r"\b(academic\s+block|across all branches|total candidates)\b", q)
             and re.search(r"\b(department|departments|branch|branches|students|halls?)\b", q))
@@ -150,10 +151,10 @@ def seating_query_intent(question: str) -> bool:
             and re.search(r"\b(semester|sem)\b", q)
             and not re.search(r"\b(course|code)\b", q))
         or (re.search(r"\b(timing|time|session)\b", q)
-            and re.search(r"\b(FN|AN|forenoon|afternoon|morning session)\b", question or "", re.I)
+            and re.search(r"\b(FN|AN|forenoon|afternoon|morning session)\b", question or "", re.IGNORECASE)
             and not re.search(r"\b(slot|timetable|class|course|courses|date|schedule|scheduled)\b", q))
         or (re.search(r"\b(appearing|writing|capacity|student strength|how many students)\b", q)
-            and re.search(r"\b(CSE|CYS|EEE|ECE|ELC|MEE|CCE|CIE|ARE|CHE|AEE|AIE|department|branch|section)\b", question or "", re.I))
+            and re.search(r"\b(CSE|CYS|EEE|ECE|ELC|MEE|CCE|CIE|ARE|CHE|AEE|AIE|department|branch|section)\b", question or "", re.IGNORECASE))
     )
 
 

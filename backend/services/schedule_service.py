@@ -5,23 +5,24 @@ Handles:
 2. Fetching weekly sessions for the applied weekday.
 3. Incorporating student elective / group choices.
 """
-from datetime import datetime, date
-from typing import Dict, Any, List, Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from datetime import date, datetime
+from typing import Any
 
-from backend.database import CalendarDay, TimetableVersion, WeeklySession, ElectiveOption
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.database import CalendarDay, ElectiveOption, TimetableVersion, WeeklySession
 
 
 async def get_schedule_for_date(
-    target_date_str: Optional[str],
+    target_date_str: str | None,
     db: AsyncSession,
-    weekday: Optional[str] = None,
+    weekday: str | None = None,
     department: str = "CSE",
     semester: str = "VII",
     section: str = "F",
-    selected_electives: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    selected_electives: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     Returns the schedule for a given date (YYYY-MM-DD) or weekday, applying calendar overrides and holidays.
     """
@@ -105,7 +106,7 @@ async def get_schedule_for_date(
     opt_res = await db.execute(opt_stmt)
     all_options = opt_res.scalars().all()
 
-    options_by_bucket: Dict[str, List[Dict[str, str]]] = {}
+    options_by_bucket: dict[str, list[dict[str, str]]] = {}
     for o in all_options:
         options_by_bucket.setdefault(o.elective_bucket, []).append({
             "course_code": o.course_code,

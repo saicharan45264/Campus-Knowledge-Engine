@@ -6,7 +6,7 @@ details, venues, or timetable entries are embedded in this module.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,14 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import (
     AcademicEvent,
     CalendarDay,
-    CalendarDayCohort,
     Document,
     ElectiveOption,
     TimetableVersion,
     WeeklySession,
 )
 from backend.services.date_resolution import extract_date_from_text
-
 
 _SEMESTERS = {
     "I": 1, "II": 2, "III": 3, "IV": 4,
@@ -129,10 +127,10 @@ def _holiday_rows(days: list[CalendarDay], events: list[AcademicEvent]) -> list[
     for day in days:
         status = (day.status or "").strip().casefold()
         particulars = (day.particulars or "").strip()
-        if "holiday" not in status and not re.search(r"\bholiday\b", particulars, re.I):
+        if "holiday" not in status and not re.search(r"\bholiday\b", particulars, re.IGNORECASE):
             continue
         iso = day.calendar_date.date().isoformat()
-        name = re.sub(r"\bholiday\b", "", particulars or day.status or "Holiday", flags=re.I)
+        name = re.sub(r"\bholiday\b", "", particulars or day.status or "Holiday", flags=re.IGNORECASE)
         name = re.sub(r"\s+", " ", name).strip(" :,-") or "Holiday"
         entries.setdefault(iso, {
             "date_iso": iso,
@@ -149,7 +147,7 @@ def _date_row(day: CalendarDay | None, events: list[AcademicEvent], target: date
     status = (day.status or "") if day else ""
     particulars = (day.particulars or "") if day else ""
     holiday = any(e["category"].casefold() == "holiday" for e in day_events)
-    holiday = holiday or bool(re.search(r"\bholiday\b", f"{status} {particulars}", re.I))
+    holiday = holiday or bool(re.search(r"\bholiday\b", f"{status} {particulars}", re.IGNORECASE))
     if day and day.day_of_week == "Sun" and status != "W" and not day.timetable_override:
         holiday = True
     if day and day.day_of_week == "Sat" and status != "W" and not day.timetable_override:
@@ -285,12 +283,12 @@ async def answer_calendar_query(
         return {"calendar_mode": mode, "markdown_answer": answer, "overrides": substitutions}
 
     if mode == "month_events":
-        month_match = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b", question, re.I)
+        month_match = re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b", question, re.IGNORECASE)
         if not month_match:
             return {"calendar_mode": mode, "markdown_answer": "Please include a month and year so I can look up calendar events."}
-        month_num = datetime.strptime(month_match.group(1), "%B").month
+        month_num = datetime.strptime(month_match.group(1), "%B").replace(tzinfo=UTC).month
         year = int(month_match.group(2))
-        include_overrides = bool(re.search(r"\b(timetable|override|substitution|working saturday)\b", question, re.I))
+        include_overrides = bool(re.search(r"\b(timetable|override|substitution|working saturday)\b", question, re.IGNORECASE))
         rows = [
             _event_dict(e) for e in events
             if e.start_date.year == year and e.start_date.month == month_num
@@ -386,8 +384,8 @@ async def answer_timetable_query(
     # Date-specific questions first consult the official calendar. If that date
     # changes the timetable weekday, the corresponding weekly sessions are shown.
     parsed = extract_date_from_text(question)
-    explicit_date = bool(re.search(r"\b(today|tomorrow|yesterday|20\d{2}[-/]\d{1,2}|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2})\b", question, re.I))
-    if parsed and explicit_date and re.search(r"\b(schedule|classes|class|timetable|today|tomorrow|weekday)\b", question, re.I):
+    explicit_date = bool(re.search(r"\b(today|tomorrow|yesterday|20\d{2}[-/]\d{1,2}|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2})\b", question, re.IGNORECASE))
+    if parsed and explicit_date and re.search(r"\b(schedule|classes|class|timetable|today|tomorrow|weekday)\b", question, re.IGNORECASE):
         calendar = await answer_calendar_query(question, db, semester=semester)
         details = calendar.get("day_details") or {}
         if details.get("is_holiday") and not details.get("timetable_override"):
@@ -415,7 +413,7 @@ async def answer_timetable_query(
         weekday = date.fromisoformat(parsed).strftime("%A") if parsed else None
     slot_match = re.search(r"\bslot\s*(\d{1,2})\b", q)
     slot_numbers = re.findall(r"\bslot\s*(\d{1,2})\b", q)
-    code_match = re.search(r"\b(?:\d{2}[a-z]{3}\d{3,4})\b", q, re.I)
+    code_match = re.search(r"\b(?:\d{2}[a-z]{3}\d{3,4})\b", q, re.IGNORECASE)
     query_type = "day_schedule" if weekday else "general"
     if re.search(r"\b(lunch|break)\b", q):
         query_type = "lunch_break"
@@ -494,7 +492,7 @@ async def answer_timetable_query(
                 day = (item.get("weekday") or "").casefold()
                 day_patterns = {"monday": r"mon(?:day)?", "tuesday": r"tue(?:s(?:day)?)?", "wednesday": r"wed(?:nesday)?", "thursday": r"thu(?:r(?:s(?:day)?)?)?", "friday": r"fri(?:day)?", "saturday": r"sat(?:urday)?"}
                 day_pattern = day_patterns.get(day)
-                venues = [part.strip() for part in (option.venue or "").split(" | ") if day_pattern and re.search(r"\b" + day_pattern + r"\b", part, re.I)]
+                venues = [part.strip() for part in (option.venue or "").split(" | ") if day_pattern and re.search(r"\b" + day_pattern + r"\b", part, re.IGNORECASE)]
                 if len(venues) == 1:
                     item["venue"] = venues[0]
     if query_type == "lunch_break":

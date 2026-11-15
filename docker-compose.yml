@@ -50,7 +50,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: deploy/Dockerfile
     container_name: cl-backend
     restart: unless-stopped
     ports:
@@ -82,7 +82,7 @@ services:
       - ./backend:/app/backend
       - ./frontend:/app/frontend
       - ./tests:/app/tests
-      - ./pytest.ini:/app/pytest.ini
+      - ./tests/pytest.ini:/app/pytest.ini
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 15s

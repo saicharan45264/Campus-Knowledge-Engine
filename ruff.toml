@@ -1,5 +1,6 @@
 line-length = 120
 target-version = "py311"
+cache-dir = "tests/cache/ruff_cache"
 
 [lint]
-ignore = ["B008", "BLE001", "ASYNC230", "SIM102", "S110"]
+ignore = ["B008", "BLE001", "ASYNC230", "SIM102", "S110", "DTZ"]

@@ -36,18 +36,9 @@ from backend.config import settings
 from backend.core.semantic_cache import semantic_cache
 from backend.database import (
     AsyncSessionLocal,
-    AcademicDocumentRecord,
-    AcademicEvent,
-    CalendarDay,
-    CalendarDayCohort,
-    ClauseReference,
     Document,
     DocumentChunk,
-    ElectiveOption,
     ProcessingReport,
-    RegulationClause,
-    TimetableVersion,
-    WeeklySession,
     drop_neo4j_schema,
     ensure_neo4j_schema,
     get_db,
@@ -60,6 +51,12 @@ from backend.parsers.visual_cropper import (
     describe_uploaded_image,
     process_pyq_visuals,
 )
+from backend.services.document_ingestion import (
+    ingest_academic_document,
+    ingest_calendar_document,
+    ingest_regulations_document,
+    ingest_timetable_document,
+)
 from backend.services.embedding_service import (
     embed_multimodal,
     embed_texts,
@@ -70,12 +67,6 @@ from backend.services.storage_service import (
     delete_all_images_from_cloudinary,
     delete_document_images_from_cloudinary,
     upload_question_image_to_cloudinary,
-)
-from backend.services.document_ingestion import (
-    ingest_academic_document,
-    ingest_calendar_document,
-    ingest_regulations_document,
-    ingest_timetable_document,
 )
 
 router = APIRouter(tags=["Document Ingestion"])

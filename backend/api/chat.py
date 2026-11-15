@@ -25,23 +25,26 @@ from backend.academic_tool_calling import (
     select_academic_tool,
 )
 from backend.api.auth import get_current_user
-from backend.core.guardrails import sanitize_retrieved_context, sanitize_student_query
 from backend.core.intent_router import classify_query_intent
+from backend.core.query_performance_logger import QueryLatencyTracker
+from backend.core.query_safety_filter import (
+    sanitize_retrieved_context,
+    sanitize_student_query,
+)
 from backend.core.semantic_cache import semantic_cache
-from backend.core.telemetry import QueryLatencyTracker
 from backend.database import StudentAccount, get_db, get_neo4j
 from backend.parsers.visual_cropper import (
     _downscale_image_b64,
     describe_uploaded_image,
     load_image_as_b64,
 )
+from backend.services.academic_document_qa_service import answer_academic_document_query
+from backend.services.academic_qa_service import answer_timetable_query
 from backend.services.embedding_service import (
     embed_multimodal,
     format_query_embedding_text,
 )
 from backend.services.embedding_service import embed_text as get_embedding
-from backend.services.academic_document_qa_service import answer_academic_document_query
-from backend.services.academic_qa_service import answer_calendar_query, answer_timetable_query
 from backend.services.graph_service import (
     execute_graph_co_query,
     execute_graph_prereq_query,
@@ -177,20 +180,24 @@ async def chat_endpoint(
     tracker.start_router()
     tool_call = None
     if not payload.image_b64:
-        from backend.academic_tool_calling import calendar_query_intent, exam_schedule_query_intent, seating_query_intent
+        from backend.academic_tool_calling import (
+            calendar_query_intent,
+            exam_schedule_query_intent,
+            seating_query_intent,
+        )
         from backend.services.regulation_service import is_regulation_query
         from backend.services.timetable_directory import is_timetable_directory_query
-        if re.search(r"\b(lab(?:oratory)?|it\s*lab)\b", search_query, re.I) and not re.search(r"\b(exam|examination|seating|exam\s+hall)\b", search_query, re.I):
+        if re.search(r"\b(lab(?:oratory)?|it\s*lab)\b", search_query, re.IGNORECASE) and not re.search(r"\b(exam|examination|seating|exam\s+hall)\b", search_query, re.IGNORECASE):
             tool_call = {"name": "lookup_lab_schedule", "arguments": {"lab_identifier": "IT Lab-I"}}
         elif seating_query_intent(search_query):
             tool_call = {"name": "lookup_exam_seating", "arguments": {}}
         elif is_regulation_query(search_query):
             tool_call = {"name": "lookup_academic_regulations", "arguments": {}}
         elif exam_schedule_query_intent(search_query):
-            tool_call = {"name": "lookup_exam_schedule", "arguments": {"exam_type": "mid_term" if re.search(r"\bmid\s*(?:term|sem)|midterm\b", search_query, re.I) else "end_sem" if re.search(r"\b(end\s*sem(?:ester)?|endsem|final exam)\b", search_query, re.I) else "all"}}
+            tool_call = {"name": "lookup_exam_schedule", "arguments": {"exam_type": "mid_term" if re.search(r"\bmid\s*(?:term|sem)|midterm\b", search_query, re.IGNORECASE) else "end_sem" if re.search(r"\b(end\s*sem(?:ester)?|endsem|final exam)\b", search_query, re.IGNORECASE) else "all"}}
         elif calendar_query_intent(search_query):
             tool_call = {"name": "lookup_academic_calendar", "arguments": {}}
-        elif is_timetable_directory_query(search_query) or (re.search(r"\bschedule\b", search_query, re.I) and re.search(r"\b(section|monday|tuesday|wednesday|thursday|friday)\b", search_query, re.I)) or (re.search(r"\b(class|classes|timetable|slots?|free periods?|vacant periods?|mentoring|CIR|project phase|lectures?)\b", search_query, re.I) and not re.search(r"\b(exam|exams|examination|holiday|calendar|regulation)\b", search_query, re.I)):
+        elif is_timetable_directory_query(search_query) or (re.search(r"\bschedule\b", search_query, re.IGNORECASE) and re.search(r"\b(section|monday|tuesday|wednesday|thursday|friday)\b", search_query, re.IGNORECASE)) or (re.search(r"\b(class|classes|timetable|slots?|free periods?|vacant periods?|mentoring|CIR|project phase|lectures?)\b", search_query, re.IGNORECASE) and not re.search(r"\b(exam|exams|examination|holiday|calendar|regulation)\b", search_query, re.IGNORECASE)):
             tool_call = {"name": "lookup_class_timetable", "arguments": {}}
         else:
             tool_call = await select_academic_tool(search_query)

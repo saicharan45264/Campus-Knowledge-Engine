@@ -27,12 +27,15 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy backend application, evaluation scripts, and frontend assets (served at /public)
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY scripts/ ./scripts/
 COPY tests/ ./tests/
-COPY pytest.ini ./
 
-# Create uploads directory structure
-RUN mkdir -p /app/backend/uploads/images
+# Create uploads directory structure and unprivileged application user
+RUN groupadd -r mach && useradd -r -g mach -d /app -s /sbin/nologin mach && \
+    mkdir -p /app/backend/uploads/images /app/tests/cache && \
+    chown -R mach:mach /app
+
+# Switch to unprivileged user for runtime security
+USER mach
 
 # Expose FastAPI application port
 EXPOSE 8000

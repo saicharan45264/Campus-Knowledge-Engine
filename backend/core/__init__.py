@@ -1,1 +1,1 @@
-"""backend/core — Core intelligence, safety, and telemetry layer."""
+"""backend/core — Core routing, safety filter, and performance logging layer."""
