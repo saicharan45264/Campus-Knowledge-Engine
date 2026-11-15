@@ -60,6 +60,7 @@ backend/uploads/
 *.pdf
 *.pptx
 *.dump
+fine_tuning/*.zip
 
 # Exclude generated crops/diagrams from repo root, but preserve static frontend assets
 *.png

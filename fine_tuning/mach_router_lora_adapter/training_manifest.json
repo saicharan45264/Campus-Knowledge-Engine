@@ -1,0 +1,11 @@
+{
+  "base_model": "Qwen/Qwen2.5-3B-Instruct",
+  "epochs": 3,
+  "training_samples": 202,
+  "held_out_samples": 69,
+  "training_time_minutes": 13.77,
+  "base_tool_accuracy": 12.0,
+  "fine_tuned_tool_accuracy": 12.0,
+  "base_exact_accuracy": 12.0,
+  "fine_tuned_exact_accuracy": 12.0
+}
